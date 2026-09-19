@@ -1421,10 +1421,8 @@ function actuallyStartChat() {
 
     setInterval(flushOutbox, 15000);
 
-    if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('sw.js')
-            .catch(err => console.error('Service worker :', err));
-    }
+    // Mode hors ligne désactivé temporairement (source du bug de cache).
+    // On pourra le réactiver plus tard, une fois l'app bien stabilisée.
 }
 
 // On démarre dès que auth.js prévient que la connexion est faite — ou tout
