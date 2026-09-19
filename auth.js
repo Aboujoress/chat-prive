@@ -48,15 +48,14 @@ function hideLogin() {
 }
 
 // Le chat ne démarre qu'une fois, même si la session est rafraîchie ensuite.
+// On passe par un évènement plutôt que d'appeler startChat() directement :
+// ça évite tout problème selon l'ordre exact de chargement des fichiers.
 function enterChat(session) {
     window.chatAuth.userId = session.user.id;
     window.chatAuth.email = session.user.email;
+    window.chatAuth.ready = true;
     hideLogin();
-
-    if (!chatStarted) {
-        chatStarted = true;
-        window.startChat();
-    }
+    document.dispatchEvent(new CustomEvent('chat-auth-ready'));
 }
 
 // Messages d'erreur en français, plus parlants que ceux de Supabase

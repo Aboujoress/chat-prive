@@ -1400,7 +1400,7 @@ document.addEventListener('keydown', (e) => {
 
 /* ---------- Démarrage, déclenché par auth.js ---------- */
 
-window.startChat = function () {
+function actuallyStartChat() {
     myId = window.chatAuth.userId;
 
     // On affiche tout de suite la copie locale (même sans connexion)
@@ -1421,9 +1421,19 @@ window.startChat = function () {
 
     setInterval(flushOutbox, 15000);
 
-    // Service worker : ouverture de l'application sans connexion
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('sw.js')
             .catch(err => console.error('Service worker :', err));
     }
-};
+}
+
+// On démarre dès que auth.js prévient que la connexion est faite — ou tout
+// de suite si c'était déjà le cas avant que ce fichier finisse de charger.
+let chatStarted = false;
+function tryStartChat() {
+    if (chatStarted || !window.chatAuth || !window.chatAuth.userId) return;
+    chatStarted = true;
+    actuallyStartChat();
+}
+document.addEventListener('chat-auth-ready', tryStartChat);
+if (window.chatAuth && window.chatAuth.ready) tryStartChat();
