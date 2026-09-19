@@ -1,6 +1,6 @@
 // SERVICE WORKER — Mon Chat Privé
 // Permet d'ouvrir l'application sans connexion Internet.
-// Si tu ajoutes un NOUVEAU fichier à précharger, change le numéro de version.
+// Si tu ajoutes un NOUVEAU fichier à précharger, change le numéro de version ci-dessous.
 const VERSION = 'v2';
 const APP_CACHE = `chat-prive-app-${VERSION}`;
 const IMG_CACHE = 'chat-prive-images';
@@ -10,13 +10,13 @@ const APP_FILES = [
     './',
     './index.html',
     './style.css',
-    './auth.css',
-    './supabase.js',
-    './auth.js',
     './chat.js',
+    './supabase.js',
     './manifest.json',
     './icon-192.png',
-    './icon-512.png'
+    './icon-512.png',
+    './fonts/bricolage-grotesque.woff2',
+    './fonts/fraunces.woff2'
 ];
 
 // Installation : on garde une copie de l'application
@@ -80,14 +80,7 @@ function networkFirst(request) {
     });
 }
 
-// Les photos viennent maintenant d'adresses signées : la même image a une
-// adresse différente chaque heure. On range donc la copie sous l'adresse
-// SANS le jeton, sinon le cache ne servirait jamais.
-function imageCacheKey(url) {
-    const u = new URL(url);
-    return u.origin + u.pathname;
-}
-
+// Photos venant d'un autre site (Supabase, avatar) : on garde celles déjà vues
 async function trimImageCache(cache) {
     const keys = await cache.keys();
     if (keys.length > MAX_IMAGES) {
@@ -97,16 +90,14 @@ async function trimImageCache(cache) {
 
 async function cacheFirstImage(request, event) {
     const cache = await caches.open(IMG_CACHE);
-    const key = imageCacheKey(request.url);
-
-    const cached = await cache.match(key);
+    const cached = await cache.match(request.url);
     if (cached) return cached;
 
     try {
         const response = await fetch(request.url, { mode: 'cors', credentials: 'omit' });
         if (response && response.ok) {
             // On enregistre la copie en arrière-plan : la photo s'affiche sans attendre
-            const save = cache.put(key, response.clone())
+            const save = cache.put(request.url, response.clone())
                 .then(() => trimImageCache(cache))
                 .catch(() => {});
             event.waitUntil(save);
@@ -114,7 +105,7 @@ async function cacheFirstImage(request, event) {
         return response;
     } catch (e) {
         try {
-            return await fetch(request);
+            return await fetch(request); // sans cache si le serveur refuse le mode CORS
         } catch (e2) {
             return Response.error();
         }
@@ -123,7 +114,7 @@ async function cacheFirstImage(request, event) {
 
 self.addEventListener('fetch', (event) => {
     const request = event.request;
-    if (request.method !== 'GET') return;   // envois, uploads : on ne touche à rien
+    if (request.method !== 'GET') return; // envois de messages, uploads : on ne touche à rien
 
     const url = new URL(request.url);
 
@@ -135,5 +126,5 @@ self.addEventListener('fetch', (event) => {
     if (request.destination === 'image') {
         event.respondWith(cacheFirstImage(request, event));
     }
-    // tout le reste (API Supabase, vocaux, temps réel) passe par le réseau
+    // tout le reste (API Supabase, vocaux, temps réel) passe normalement par le réseau
 });
