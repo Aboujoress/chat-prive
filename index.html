@@ -11,6 +11,7 @@
     <meta name="apple-mobile-web-app-title" content="Chat Privé">
     <title>Mon Chat Privé</title>
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="auth.css">
 </head>
 <body>
 
@@ -90,6 +91,7 @@
             </label>
 
             <button type="button" class="profile-save" id="profileSaveBtn">Enregistrer</button>
+            <button type="button" class="profile-signout" id="profileSignOutBtn">Se déconnecter</button>
         </div>
     </div>
 
@@ -105,8 +107,29 @@
         </div>
     </div>
 
-    <!-- SCRIPTS : Supabase (copie locale) d'abord, puis chat.js une seule fois -->
+    <!-- ÉCRAN DE CONNEXION : recouvre tout tant que personne n'est identifié -->
+    <div class="login-screen" id="loginScreen">
+        <form class="login-card" id="loginForm" autocomplete="on">
+            <div class="login-mark">💬</div>
+            <h1>Mon Chat Privé</h1>
+            <p class="login-intro">Connecte-toi pour accéder à votre conversation.</p>
+
+            <p class="login-error" id="loginError"></p>
+
+            <label class="login-field">Adresse e-mail
+                <input type="email" id="loginEmail" name="email" autocomplete="username" required>
+            </label>
+            <label class="login-field">Mot de passe
+                <input type="password" id="loginPassword" name="password" autocomplete="current-password" required>
+            </label>
+
+            <button type="submit" id="loginSubmit">Se connecter</button>
+        </form>
+    </div>
+
+    <!-- SCRIPTS : Supabase, puis l'authentification, puis le chat -->
     <script src="supabase.js"></script>
+    <script src="auth.js"></script>
     <script src="chat.js"></script>
 </body>
 </html>
