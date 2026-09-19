@@ -9,6 +9,7 @@ body {
     justify-content: center;
     align-items: center;
     min-height: 100vh;
+    min-height: 100dvh;
     margin: 0;
 }
 
@@ -16,6 +17,7 @@ body {
     width: 100%;
     max-width: 450px;
     height: 90vh;
+    height: 90dvh;
     background-color: #ffffff;
     border-radius: 20px;
     box-shadow: 0 15px 35px rgba(0, 0, 0, 0.25);
@@ -25,9 +27,21 @@ body {
     position: relative;
 }
 
+/* Sur téléphone : plein écran, sans bords arrondis */
+@media (max-width: 500px) {
+    body { align-items: stretch; }
+    .chat-container {
+        height: 100vh;
+        height: 100dvh;
+        max-width: 100%;
+        border-radius: 0;
+    }
+}
+
 .chat-header {
     background-color: #ffffff;
     padding: 15px 20px;
+    padding-top: calc(15px + env(safe-area-inset-top, 0px));
     border-bottom: 1px solid #f1f5f9;
 }
 
@@ -45,19 +59,37 @@ body {
 }
 
 .user-info h3 { margin: 0; font-size: 1.05em; color: #0f172a; }
-.status-online { font-size: 0.8em; color: #22c55e; font-weight: bold; }
+
+/* Statut en direct de l'autre personne */
+.status { font-size: 0.8em; font-weight: bold; }
+.status.online  { color: #22c55e; }
+.status.offline { color: #94a3b8; }
+.status.typing  { color: #2563eb; }
 
 .chat-messages {
     flex: 1;
     padding: 20px;
     background-color: #f8fafc;
     overflow-y: auto;
+    overscroll-behavior: contain;
     display: flex;
     flex-direction: column;
     gap: 12px;
 }
 
-/* BULLES & BOUTON SUPPRIMER AU SURVOL */
+/* Séparateur de date (Aujourd'hui, Hier, ...) */
+.date-separator {
+    align-self: center;
+    background: #e2e8f0;
+    color: #475569;
+    font-size: 0.72em;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: 999px;
+    text-transform: capitalize;
+}
+
+/* BULLES & BOUTON SUPPRIMER */
 @keyframes popIn {
     from { opacity: 0; transform: translateY(10px) scale(0.96); }
     to { opacity: 1; transform: translateY(0) scale(1); }
@@ -71,6 +103,12 @@ body {
     font-size: 0.95em;
     line-height: 1.4;
     animation: popIn 0.22s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+
+.message p {
+    margin: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }
 
 .message.received {
@@ -96,7 +134,7 @@ body {
     opacity: 0.75;
 }
 
-/* Bouton pour supprimer un message envoyé */
+/* Bouton supprimer : au survol (PC) ou au toucher du message (téléphone) */
 .delete-msg-btn {
     position: absolute;
     top: -8px;
@@ -105,9 +143,9 @@ body {
     color: white;
     border: none;
     border-radius: 50%;
-    width: 20px;
-    height: 20px;
-    font-size: 10px;
+    width: 22px;
+    height: 22px;
+    font-size: 11px;
     cursor: pointer;
     display: none;
     align-items: center;
@@ -116,7 +154,8 @@ body {
     transition: transform 0.1s;
 }
 
-.message:hover .delete-msg-btn {
+.message:hover .delete-msg-btn,
+.message.show-actions .delete-msg-btn {
     display: flex;
 }
 
@@ -127,6 +166,7 @@ body {
 /* MEDIA IMAGES & AUDIOS */
 .message-img {
     max-width: 100%;
+    max-height: 320px;
     border-radius: 12px;
     cursor: pointer;
     display: block;
@@ -134,13 +174,13 @@ body {
 }
 
 .message audio {
-    width: 220px;
+    width: min(220px, 60vw);
     height: 36px;
     margin-top: 4px;
     outline: none;
 }
 
-/* BARRE D'ACTIVITÉ VOCALE RECONFIGURÉE */
+/* BARRE D'ACTIVITÉ VOCALE */
 .activity-bar {
     display: none;
     align-items: center;
@@ -175,6 +215,7 @@ body {
     background: transparent;
     flex: 1;
     margin: 0 10px;
+    min-width: 0;
 }
 
 .recording-timer {
@@ -193,10 +234,11 @@ body {
     overflow-x: auto;
 }
 .emoji-picker.active { display: flex; }
-.emoji-picker span { font-size: 1.2rem; cursor: pointer; }
+.emoji-picker span { font-size: 1.4rem; cursor: pointer; }
 
 .chat-input-area {
     padding: 12px 15px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
     background-color: #ffffff;
     border-top: 1px solid #f1f5f9;
     display: flex;
@@ -206,17 +248,22 @@ body {
 
 .chat-input-area input[type="text"] {
     flex: 1;
+    min-width: 0;
     padding: 10px 14px;
     border: 1px solid #cbd5e1;
     border-radius: 24px;
     outline: none;
-    font-size: 0.95em;
+    font-size: 16px; /* évite le zoom automatique sur iPhone */
+}
+
+.chat-input-area input[type="text"]:focus {
+    border-color: #2563eb;
 }
 
 .action-btn {
     background: transparent;
     border: none;
-    font-size: 1.2rem;
+    font-size: 1.3rem;
     cursor: pointer;
     padding: 4px;
 }
@@ -239,7 +286,11 @@ body {
     border-radius: 24px;
     font-weight: bold;
     cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
 }
+
+#sendBtn:hover  { background-color: #1d4ed8; }
+#sendBtn:active { transform: scale(0.96); }
 
 /* MODALE IMAGE */
 .image-modal {
