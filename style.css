@@ -43,12 +43,18 @@ body {
     padding: 15px 20px;
     padding-top: calc(15px + env(safe-area-inset-top, 0px));
     border-bottom: 1px solid #f1f5f9;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
 }
 
 .user-info {
     display: flex;
     align-items: center;
     gap: 12px;
+    min-width: 0;
+    cursor: pointer;
 }
 
 .chat-avatar {
@@ -305,3 +311,163 @@ body {
 }
 .image-modal img { max-width: 90%; max-height: 80vh; border-radius: 12px; }
 .close-modal { position: absolute; top: 20px; right: 25px; color: white; font-size: 35px; cursor: pointer; }
+
+/* MODE HORS LIGNE */
+.offline-banner {
+    display: none;
+    background: #fef3c7;
+    color: #92400e;
+    font-size: 0.8em;
+    font-weight: 600;
+    padding: 6px 12px;
+    text-align: center;
+    border-bottom: 1px solid #fde68a;
+}
+.offline-banner.show { display: block; }
+
+/* Message en attente d'envoi (🕓) */
+.message.pending { opacity: 0.7; }
+
+/* PROFILS */
+.me-btn {
+    flex-shrink: 0;
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    border: 2px solid #dbeafe;
+    border-radius: 50%;
+    background: #ffffff;
+    overflow: hidden;
+    cursor: pointer;
+    transition: transform 0.1s, border-color 0.2s;
+}
+.me-btn:hover { border-color: #2563eb; transform: scale(1.05); }
+.me-avatar { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.profile-modal {
+    display: none;
+    position: fixed;
+    z-index: 1100;
+    top: 0; left: 0; width: 100%; height: 100%;
+    padding: 16px;
+    background: rgba(15, 23, 42, 0.6);
+    backdrop-filter: blur(4px);
+    align-items: center;
+    justify-content: center;
+}
+.profile-modal.open { display: flex; }
+
+.profile-card {
+    position: relative;
+    width: 100%;
+    max-width: 360px;
+    max-height: 100%;
+    overflow-y: auto;
+    padding: 26px 22px 22px;
+    background: #ffffff;
+    border-radius: 20px;
+    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.3);
+    text-align: center;
+}
+.profile-card h2 { margin: 0 0 14px; font-size: 1.15em; color: #0f172a; }
+
+.profile-close {
+    position: absolute;
+    top: 8px;
+    right: 12px;
+    background: none;
+    border: none;
+    font-size: 28px;
+    line-height: 1;
+    color: #64748b;
+    cursor: pointer;
+}
+
+.profile-avatar-wrap {
+    position: relative;
+    width: 120px;
+    height: 120px;
+    margin: 0 auto 10px;
+}
+.profile-avatar-big {
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 3px solid #dbeafe;
+    background: #f1f5f9;
+    display: block;
+}
+.profile-avatar-edit {
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    width: 38px;
+    height: 38px;
+    border: 3px solid #ffffff;
+    border-radius: 50%;
+    background: #2563eb;
+    color: #ffffff;
+    font-size: 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.link-btn {
+    background: none;
+    border: none;
+    color: #ef4444;
+    font-size: 0.85em;
+    cursor: pointer;
+    padding: 4px 8px;
+}
+.link-btn:hover { text-decoration: underline; }
+
+.profile-field {
+    display: block;
+    margin-top: 14px;
+    text-align: left;
+    font-size: 0.8em;
+    font-weight: 600;
+    color: #64748b;
+}
+.profile-field input,
+.profile-field textarea {
+    display: block;
+    width: 100%;
+    margin-top: 6px;
+    padding: 10px 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 12px;
+    font-size: 16px; /* évite le zoom automatique sur iPhone */
+    font-weight: 400;
+    color: #1e293b;
+    outline: none;
+    resize: none;
+}
+.profile-field input:focus,
+.profile-field textarea:focus { border-color: #2563eb; }
+
+.profile-save {
+    width: 100%;
+    margin-top: 18px;
+    padding: 12px;
+    background: #2563eb;
+    color: #ffffff;
+    border: none;
+    border-radius: 24px;
+    font-size: 1em;
+    font-weight: bold;
+    cursor: pointer;
+}
+.profile-save:hover { background: #1d4ed8; }
+.profile-save:disabled { opacity: 0.6; cursor: default; }
+
+.profile-bio {
+    margin: 0;
+    color: #475569;
+    font-size: 0.95em;
+    overflow-wrap: anywhere;
+}

@@ -4,6 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="theme-color" content="#0f172a">
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Chat Privé">
     <title>Mon Chat Privé</title>
     <link rel="stylesheet" href="style.css">
 </head>
@@ -13,14 +18,20 @@
 
         <!-- EN-TÊTE -->
         <header class="chat-header">
-            <div class="user-info">
-                <img src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150" alt="Avatar" class="chat-avatar">
+            <div class="user-info" id="partnerInfo" title="Voir le profil">
+                <img id="partnerAvatar" class="chat-avatar" alt="Photo de profil">
                 <div>
-                    <h3>Mon Amour</h3>
+                    <h3 id="partnerName">Mon Amour</h3>
                     <span class="status offline" id="statusText">○ Hors ligne</span>
                 </div>
             </div>
+            <button type="button" class="me-btn" id="meBtn" title="Mon profil">
+                <img id="meAvatar" class="me-avatar" alt="Mon profil">
+            </button>
         </header>
+
+        <!-- BANDEAU HORS LIGNE -->
+        <div class="offline-banner" id="offlineBanner">📴 Hors ligne — tes messages partiront dès que la connexion reviendra</div>
 
         <!-- ZONE DE DISCUSSION -->
         <main class="chat-messages" id="chatMessages"></main>
@@ -58,8 +69,44 @@
         <img id="modalImg" src="" alt="Aperçu">
     </div>
 
-    <!-- SCRIPTS : Supabase d'abord, puis chat.js une seule fois -->
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <!-- FENÊTRE : MON PROFIL (modifiable) -->
+    <div class="profile-modal" id="profileModal">
+        <div class="profile-card">
+            <button type="button" class="profile-close" id="profileClose" title="Fermer">&times;</button>
+            <h2>Mon profil</h2>
+
+            <div class="profile-avatar-wrap">
+                <img id="profileAvatarPreview" class="profile-avatar-big" alt="Ma photo">
+                <button type="button" class="profile-avatar-edit" id="profileAvatarBtn" title="Changer la photo">📷</button>
+            </div>
+            <input type="file" id="profileAvatarInput" accept="image/*" style="display: none;">
+            <button type="button" class="link-btn" id="profileRemoveBtn">Retirer la photo</button>
+
+            <label class="profile-field">Nom affiché
+                <input type="text" id="profileNameInput" maxlength="30" placeholder="Ton nom" autocomplete="off">
+            </label>
+            <label class="profile-field">Statut
+                <textarea id="profileBioInput" maxlength="80" rows="2" placeholder="Ex : Disponible, en réunion, au travail…"></textarea>
+            </label>
+
+            <button type="button" class="profile-save" id="profileSaveBtn">Enregistrer</button>
+        </div>
+    </div>
+
+    <!-- FENÊTRE : PROFIL DE L'AUTRE PERSONNE (lecture seule) -->
+    <div class="profile-modal" id="partnerModal">
+        <div class="profile-card">
+            <button type="button" class="profile-close" id="partnerModalClose" title="Fermer">&times;</button>
+            <div class="profile-avatar-wrap">
+                <img id="partnerModalAvatar" class="profile-avatar-big" alt="Photo de profil">
+            </div>
+            <h2 id="partnerModalName"></h2>
+            <p class="profile-bio" id="partnerModalBio"></p>
+        </div>
+    </div>
+
+    <!-- SCRIPTS : Supabase (copie locale) d'abord, puis chat.js une seule fois -->
+    <script src="supabase.js"></script>
     <script src="chat.js"></script>
 </body>
 </html>
