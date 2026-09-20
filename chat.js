@@ -1,19 +1,24 @@
-// CONFIGURATION SUPABASE
-const SUPABASE_URL = 'https://ocquhbznrqbezhnjxaml.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_kDdbAVit-5dBPLA7JxNA7Q_nlskMKw9';
-const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+// =====================================================================
+//  MON CHAT PRIVÉ — logique de la messagerie
+//  auth.js se charge AVANT ce fichier : il crée window.supabaseClient,
+//  gère la connexion (e-mail + mot de passe) et remplit window.chatAuth.
+//  Ce fichier ne démarre rien tant que la connexion n'est pas faite.
+// =====================================================================
+
+const supabaseClient = window.supabaseClient;
 
 const BASE_TITLE = document.title;
-const MAX_RECORD_SECONDS = 300;   // un vocal s'arrête et s'envoie tout seul après 5 minutes
-const HISTORY_LIMIT = 300;        // nombre de messages chargés depuis Supabase
-const CACHE_LIMIT = 200;          // nombre de messages gardés pour le mode hors ligne
+const MAX_RECORD_SECONDS = 300;      // un vocal s'arrête et s'envoie seul après 5 min
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+const HISTORY_LIMIT = 300;           // messages chargés depuis Supabase
+const CACHE_LIMIT = 200;             // messages gardés pour le mode hors ligne
+const SIGNED_URL_SECONDS = 3600;     // durée de vie d'une adresse de fichier
 const CACHE_KEY = 'chatCache';
 const OUTBOX_KEY = 'chatOutbox';
+const MEDIA_URL_KEY = 'chatMediaUrls';
 
-// IDENTITÉ : chacun saisit son prénom une seule fois (gardé dans le navigateur)
-let myName = localStorage.getItem('chatName');
-const hasStoredName = !!myName;
-if (!hasStoredName) myName = 'Moi'; // provisoire : l'écran de bienvenue demande le vrai prénom
+// Mon identifiant de compte. Renseigné au démarrage, une fois connecté.
+let myId = null;
 
 // Ciblages DOM
 const messageInput = document.getElementById('messageInput');
@@ -38,9 +43,6 @@ const scrollBadge = document.getElementById('scrollBadge');
 const typingRow = document.getElementById('typingRow');
 const avatarRing = document.getElementById('avatarRing');
 const composerEl = document.getElementById('composer');
-const welcomeEl = document.getElementById('welcome');
-const welcomeInput = document.getElementById('welcomeInput');
-const welcomeBtn = document.getElementById('welcomeBtn');
 const reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 
 // Variables globales audio
@@ -48,7 +50,7 @@ let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
 let timerInterval = null;
-let secondsRecorded = 0;
+let recordStartedAt = 0;
 let mediaStream = null;
 let audioContext = null;
 let analyser = null;
@@ -62,6 +64,7 @@ let historyLoaded = false;
 let loadingHistory = false;
 const pendingIncoming = [];
 let lastDateKey = null;
+let lastRenderedTime = 0;   // sert à détecter un message arrivé dans le désordre
 let unreadCount = 0;
 let partnerOnline = false;
 let partnerTyping = false;
@@ -107,6 +110,10 @@ function cacheRemove(id) {
     saveCache();
 }
 
+function cacheFind(id) {
+    return messageCache.find(m => m.id === id) || null;
+}
+
 // Messages écrits sans connexion, en attente d'envoi
 function getOutbox() { return readJSON(OUTBOX_KEY, []); }
 function setOutbox(list) { writeJSON(OUTBOX_KEY, list); }
@@ -132,6 +139,18 @@ function isNetworkError(error) {
     if (!navigator.onLine) return true;
     const msg = String((error && (error.message || error)) || '').toLowerCase();
     return /failed to fetch|networkerror|network request failed|load failed|fetch failed/.test(msg);
+}
+
+// Code 23505 = la base a refusé un doublon : le message était déjà passé.
+function isDuplicateError(error) {
+    return !!error && (error.code === '23505' || /duplicate key/i.test(error.message || ''));
+}
+
+// Identifiant unique généré par le navigateur : la base refuse deux fois
+// le même, ce qui empêche tout doublon lors d'un réessai.
+function newClientId() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function playBeep() {
@@ -191,6 +210,66 @@ function updateStatus() {
 function refreshConnectionUI() {
     if (offlineBanner) offlineBanner.classList.toggle('show', !navigator.onLine);
     updateStatus();
+}
+
+/* ---------- Fichiers privés : adresses signées ---------- */
+// Le stockage "media" est privé : la base ne contient que le chemin du fichier.
+// L'adresse est demandée au serveur à l'affichage et reste valable une heure.
+
+let signedUrls = readJSON(MEDIA_URL_KEY, {});   // chemin -> { url, exp }
+const localMedia = new Map();                   // chemin -> copie locale (envoi en cours)
+
+function saveSignedUrls() {
+    // On ne garde que les 150 plus récentes pour ne pas saturer localStorage
+    const entries = Object.entries(signedUrls).sort((a, b) => b[1].exp - a[1].exp).slice(0, 150);
+    signedUrls = Object.fromEntries(entries);
+    writeJSON(MEDIA_URL_KEY, signedUrls);
+}
+
+// Adresse déjà connue et encore valable (sans appel réseau)
+function cachedMediaUrl(path) {
+    if (!path) return null;
+    const local = localMedia.get(path);
+    if (local) return local;
+    const hit = signedUrls[path];
+    return hit && hit.exp > Date.now() ? hit.url : null;
+}
+
+async function mediaUrl(path) {
+    if (!path) return null;
+
+    const ready = cachedMediaUrl(path);
+    if (ready) return ready;
+
+    const hit = signedUrls[path];
+    // Hors ligne : on retourne l'adresse périmée, le navigateur en a peut-être une copie
+    if (!navigator.onLine) return hit ? hit.url : null;
+
+    try {
+        const { data, error } = await supabaseClient.storage
+            .from('media')
+            .createSignedUrl(path, SIGNED_URL_SECONDS);
+
+        if (error || !data) {
+            console.warn('Adresse de fichier indisponible :', error && error.message);
+            return hit ? hit.url : null;
+        }
+        signedUrls[path] = { url: data.signedUrl, exp: Date.now() + (SIGNED_URL_SECONDS - 300) * 1000 };
+        saveSignedUrls();
+        return data.signedUrl;
+    } catch (e) {
+        return hit ? hit.url : null;
+    }
+}
+
+// Remplit le src d'une image ou d'un lecteur audio, sans bloquer l'affichage
+function applyMediaSrc(el, path) {
+    const ready = cachedMediaUrl(path);
+    if (ready) {
+        el.src = ready;
+        return;
+    }
+    mediaUrl(path).then(url => { if (url) el.src = url; });
 }
 
 /* ---------- Effets et interface : défilement, lumière, cœurs, vocaux, thème ---------- */
@@ -337,7 +416,7 @@ function buildVoicePlayer(src) {
     const knownSeconds = durationFromUrl(src);
     const audio = document.createElement('audio');
     audio.preload = knownSeconds ? 'none' : 'metadata'; // ne télécharge rien avant l'écoute si on connaît la durée
-    audio.src = localMedia.get(src) || src;
+    applyMediaSrc(audio, src);
 
     const playBtn = document.createElement('button');
     playBtn.type = 'button';
@@ -509,51 +588,12 @@ document.querySelectorAll('#accentPicker button').forEach(btn => {
 });
 applyTheme(readTheme(), false);
 
-/* --- Écran de bienvenue (première ouverture) --- */
-
-let appStarted = false;
-
-function showWelcome() {
-    if (!welcomeEl) return;
-    welcomeEl.classList.add('open');
-    setTimeout(() => { if (welcomeInput) welcomeInput.focus(); }, 400);
-}
-
-function submitWelcome() {
-    const name = (welcomeInput.value || '').trim();
-    if (!name) {
-        welcomeInput.classList.remove('shake');
-        void welcomeInput.offsetWidth;
-        welcomeInput.classList.add('shake');
-        welcomeInput.focus();
-        return;
-    }
-    myName = name;
-    localStorage.setItem('chatName', name);
-    welcomeEl.classList.remove('open');
-    startApp();
-}
-
-if (welcomeBtn) welcomeBtn.addEventListener('click', submitWelcome);
-if (welcomeInput) {
-    welcomeInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); submitWelcome(); }
-    });
-}
-
-function startApp() {
-    if (appStarted) return;
-    appStarted = true;
-    initChat();
-    initProfilesChannel();
-    refreshProfileUI();
-}
-
 /* ---------- Affichage des messages ---------- */
 
 function resetChatView() {
     chatMessages.innerHTML = '';
     lastDateKey = null;
+    lastRenderedTime = 0;
 }
 
 // Séparateur de date quand on change de jour
@@ -573,13 +613,13 @@ function renderMessage(msg, replaceEl) {
     if (!msg || document.getElementById(`msg-${msg.id}`)) return;
 
     const created = msg.created_at ? new Date(msg.created_at) : new Date();
-    const isMine = msg.sender === myName;
+    const isMine = msg.sender_id === myId;
     const wasNear = isNearBottom();
 
     // Message qu'on vient d'envoyer : il prend la place de la bulle "en cours d'envoi"
     let target = replaceEl || null;
-    if (!target && isMine) {
-        const rec = takeSendingMatch(msg);
+    if (!target && isMine && msg.client_id) {
+        const rec = takeSendingMatch(msg.client_id);
         if (rec) target = rec.el;
     }
     const replacing = !!(target && target.parentNode);
@@ -620,7 +660,7 @@ function renderMessage(msg, replaceEl) {
         });
         img.addEventListener('error', () => img.classList.remove('loading'));
         img.addEventListener('click', () => openModal(img.src));
-        img.src = localMedia.get(msg.content) || msg.content;
+        applyMediaSrc(img, msg.content);
         div.appendChild(img);
     } else if (msg.type === 'audio') {
         div.appendChild(buildVoicePlayer(msg.content));
@@ -642,16 +682,18 @@ function renderMessage(msg, replaceEl) {
         if (isMine || wasNear || renderInstant) scrollToBottom();
         else noteNewBelow(); // on lit plus haut : on ne bouge pas, on signale le nouveau message
     }
+
+    lastRenderedTime = Math.max(lastRenderedTime, created.getTime());
 }
 
 // Message écrit hors ligne : affiché avec une horloge 🕓 en attendant l'envoi
 function renderPending(item) {
-    if (document.getElementById(`pending-${item.tempId}`)) return;
+    if (document.getElementById(`pending-${item.clientId}`)) return;
 
     ensureDateSeparator(new Date(item.created_at));
 
     const div = document.createElement('div');
-    div.id = `pending-${item.tempId}`;
+    div.id = `pending-${item.clientId}`;
     div.className = `message sent pending${renderInstant ? ' instant' : ''}`;
 
     const p = document.createElement('p');
@@ -667,23 +709,21 @@ function renderPending(item) {
     scrollToBottom();
 }
 
-function removePending(tempId) {
-    const el = document.getElementById(`pending-${tempId}`);
+function removePending(clientId) {
+    const el = document.getElementById(`pending-${clientId}`);
     if (el) el.remove();
 }
 
 /* ---------- Envoi instantané : la bulle apparaît tout de suite ---------- */
 
-const sending = new Map();     // tempId -> { el, type, key } (envois en cours)
-const localMedia = new Map();  // adresse du fichier -> copie locale (évite de retélécharger ce qu'on vient d'envoyer)
+const sending = new Map();   // clientId -> { el, type }
 
 function formatDuration(seconds) {
     const total = Math.max(0, Math.round(seconds || 0));
     return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
-function addSending(type, opts) {
-    const tempId = `s-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+function addSending(clientId, type, opts) {
     const now = new Date();
     ensureDateSeparator(now);
 
@@ -716,47 +756,36 @@ function addSending(type, opts) {
     scrollToBottom();
     pulseGlow('right');
 
-    sending.set(tempId, { el: div, type: type, key: type === 'text' ? opts.text : null });
-    return tempId;
+    sending.set(clientId, { el: div, type: type });
 }
 
-function setSendingKey(tempId, key) {
-    const rec = sending.get(tempId);
-    if (rec) rec.key = key;
-}
-
-function setSendingPreview(tempId, src) {
-    const rec = sending.get(tempId);
+function setSendingPreview(clientId, src) {
+    const rec = sending.get(clientId);
     const img = rec && rec.el.querySelector('img');
     if (img) img.src = src;
 }
 
-function failSending(tempId) {
-    const rec = sending.get(tempId);
+function failSending(clientId) {
+    const rec = sending.get(clientId);
     if (rec) rec.el.remove();
-    sending.delete(tempId);
+    sending.delete(clientId);
 }
 
-// Le temps réel peut annoncer notre propre message avant la réponse d'envoi : on l'associe à la bulle
-function takeSendingMatch(msg) {
-    const age = Date.now() - new Date(msg.created_at).getTime();
-    if (!(age < 120000)) return null; // uniquement les messages récents
-    for (const [tempId, rec] of sending) {
-        if (rec.type === msg.type && rec.key === msg.content) {
-            sending.delete(tempId);
-            return rec;
-        }
-    }
-    return null;
+// Le temps réel peut annoncer notre propre message avant la réponse
+// d'envoi : on retrouve la bulle grâce au client_id, sans ambiguïté.
+function takeSendingMatch(clientId) {
+    const rec = sending.get(clientId);
+    if (rec) sending.delete(clientId);
+    return rec || null;
 }
 
 // Le serveur a confirmé : la bulle devient le vrai message
-function finishSending(tempId, saved) {
+function finishSending(clientId, saved) {
     cacheAdd(saved);
-    const rec = sending.get(tempId);
-    if (rec) sending.delete(tempId);
+    const rec = sending.get(clientId);
+    if (rec) sending.delete(clientId);
 
-    if (document.getElementById(`msg-${saved.id}`)) { // déjà affiché grâce au temps réel
+    if (document.getElementById(`msg-${saved.id}`)) {   // déjà affiché grâce au temps réel
         if (rec) rec.el.remove();
         return;
     }
@@ -771,9 +800,18 @@ function handleIncoming(msg) {
         pendingIncoming.push(msg);
         return;
     }
+
+    // Message plus ancien que le dernier affiché (il arrive en retard) :
+    // on recharge pour que l'ordre chronologique reste juste.
+    const t = new Date(msg.created_at).getTime();
+    if (lastRenderedTime && t < lastRenderedTime - 1000 && !sending.has(msg.client_id)) {
+        loadHistory();
+        return;
+    }
+
     renderMessage(msg);
 
-    if (msg.sender !== myName) {
+    if (msg.sender_id !== myId) {
         partnerTyping = false;
         updateStatus();
         refreshProfileUI();
@@ -788,7 +826,7 @@ function handleIncoming(msg) {
 }
 
 document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) {
+    if (!document.hidden && myId) {
         unreadCount = 0;
         document.title = BASE_TITLE;
         flushOutbox();
@@ -799,25 +837,25 @@ document.addEventListener('visibilitychange', () => {
 /* ---------- Supabase : envoi ---------- */
 
 // Retourne { status: 'ok' | 'network' | 'error', error }
-async function insertMessage(content, type, tempId) {
+async function insertMessage(content, type, clientId) {
     const { data, error } = await supabaseClient
         .from('messages')
-        .insert([{ content: content, type: type, sender: myName }])
+        .insert([{ content: content, type: type, sender_id: myId, client_id: clientId }])
         .select();
 
     if (error) {
+        if (isDuplicateError(error)) {
+            // Le message était déjà arrivé : rien à faire, le temps réel l'affichera.
+            failSending(clientId);
+            return { status: 'ok' };
+        }
         console.error("Erreur d'envoi :", error);
         return { status: isNetworkError(error) ? 'network' : 'error', error: error };
     }
     if (data && data[0]) {
-        if (tempId) {
-            finishSending(tempId, data[0]);   // la bulle en cours d'envoi devient le vrai message
-        } else {
-            cacheAdd(data[0]);
-            renderMessage(data[0]);
-        }
-    } else if (tempId) {
-        failSending(tempId);
+        finishSending(clientId, data[0]);   // la bulle en cours d'envoi devient le vrai message
+    } else {
+        failSending(clientId);
     }
     return { status: 'ok' };
 }
@@ -826,18 +864,19 @@ function alertUploadError(label, error) {
     if (isNetworkError(error)) {
         alert(`Pas de connexion : ${label} n'a pas pu être envoyé. Réessaie quand tu seras en ligne.`);
     } else {
-        alert(`${label} non envoyé : ` + error.message);
+        alert(`${label} non envoyé : ` + ((error && error.message) || 'erreur inconnue'));
     }
 }
 
-/* ---------- Messages en attente (envoi automatique au retour de la connexion) ---------- */
+/* ---------- Messages en attente (envoi au retour de la connexion) ---------- */
 
-function queueText(text) {
+// On réutilise le même client_id lors d'un réessai : si le premier envoi
+// était en fait passé, la base refuse le doublon et rien n'apparaît deux fois.
+function queueText(text, clientId) {
     const item = {
-        tempId: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        clientId: clientId || newClientId(),
         content: text,
         type: 'text',
-        sender: myName,
         created_at: new Date().toISOString()
     };
     const outbox = getOutbox();
@@ -847,7 +886,7 @@ function queueText(text) {
 }
 
 async function flushOutbox() {
-    if (flushing || !navigator.onLine || getOutbox().length === 0) return;
+    if (flushing || !myId || !navigator.onLine || getOutbox().length === 0) return;
     flushing = true;
     let sentSomething = false;
 
@@ -857,46 +896,29 @@ async function flushOutbox() {
             if (outbox.length === 0) break;
             const item = outbox[0];
 
-            // Évite un doublon si un envoi précédent était en fait déjà arrivé
-            const check = await supabaseClient
+            const { data, error } = await supabaseClient
                 .from('messages')
-                .select('*')
-                .eq('sender', item.sender)
-                .eq('created_at', item.created_at)
-                .eq('content', item.content)
-                .limit(1);
-            if (check.error && isNetworkError(check.error)) break;
+                .insert([{
+                    content: item.content,
+                    type: item.type,
+                    sender_id: myId,
+                    client_id: item.clientId,
+                    created_at: item.created_at
+                }])
+                .select();
 
-            let saved = (!check.error && check.data && check.data[0]) ? check.data[0] : null;
-
-            if (!saved) {
-                const { data, error } = await supabaseClient
-                    .from('messages')
-                    .insert([{
-                        content: item.content,
-                        type: item.type,
-                        sender: item.sender,
-                        created_at: item.created_at
-                    }])
-                    .select();
-
-                if (error) {
-                    if (isNetworkError(error)) break; // on réessaiera plus tard
-                    console.error("Message en attente refusé :", error);
-                    alert("Un message en attente n'a pas pu être envoyé : " + error.message);
-                    setOutbox(getOutbox().filter(i => i.tempId !== item.tempId));
-                    removePending(item.tempId);
-                    continue;
-                }
-                saved = data && data[0];
+            if (error && !isDuplicateError(error)) {
+                if (isNetworkError(error)) break;   // on réessaiera plus tard
+                console.error('Message en attente refusé :', error);
+                alert("Un message en attente n'a pas pu être envoyé : " + error.message);
+                setOutbox(getOutbox().filter(i => i.clientId !== item.clientId));
+                removePending(item.clientId);
+                continue;
             }
 
-            setOutbox(getOutbox().filter(i => i.tempId !== item.tempId));
-            removePending(item.tempId);
-            if (saved) {
-                cacheAdd(saved);
-                renderMessage(saved);
-            }
+            setOutbox(getOutbox().filter(i => i.clientId !== item.clientId));
+            removePending(item.clientId);
+            if (data && data[0]) cacheAdd(data[0]);
             sentSomething = true;
         }
     } finally {
@@ -919,6 +941,7 @@ async function loadHistory() {
             .from('messages')
             .select('*')
             .order('created_at', { ascending: false })
+            .order('id', { ascending: false })
             .limit(HISTORY_LIMIT);
 
         if (error) {
@@ -954,7 +977,7 @@ async function loadHistory() {
 function initChat() {
     realtimeChannel = supabaseClient.channel('chat-prive', {
         config: {
-            presence: { key: myName },
+            presence: { key: myId },
             broadcast: { self: false }
         }
     });
@@ -969,13 +992,13 @@ function initChat() {
         })
         // Qui est en ligne ?
         .on('presence', { event: 'sync' }, () => {
-            const others = Object.keys(realtimeChannel.presenceState()).filter(k => k !== myName);
+            const others = Object.keys(realtimeChannel.presenceState()).filter(k => k !== myId);
             partnerOnline = others.length > 0;
             updateStatus();
         })
         // L'autre est en train d'écrire
         .on('broadcast', { event: 'typing' }, ({ payload }) => {
-            if (!payload || payload.name === myName) return;
+            if (!payload || payload.id === myId) return;
             partnerTyping = true;
             updateStatus();
             clearTimeout(partnerTypingTimeout);
@@ -989,7 +1012,7 @@ function initChat() {
             if (status === 'SUBSCRIBED') {
                 channelReady = true;
                 updateStatus();
-                try { await realtimeChannel.track({ name: myName }); } catch (e) { /* ignoré */ }
+                try { await realtimeChannel.track({ id: myId }); } catch (e) { /* ignoré */ }
                 await loadHistory();
                 loadProfiles();
                 flushOutbox();
@@ -1001,11 +1024,11 @@ function initChat() {
 }
 
 /* ---------- Profils : photo, nom affiché, statut ---------- */
+// Chaque personne est identifiée par l'UUID de son compte.
+// La photo est un fichier privé : le profil ne contient que son chemin.
 
-// Chaque personne est identifiée par le prénom saisi au départ (myName).
-// Le "nom affiché" peut changer librement sans toucher aux anciens messages.
 const PROFILES_KEY = 'chatProfiles';
-let profiles = readJSON(PROFILES_KEY, {}); // identifiant -> profil
+let profiles = readJSON(PROFILES_KEY, {});   // uuid -> profil
 let avatarDraft = { blob: null, previewUrl: null, removed: false };
 let savingProfile = false;
 
@@ -1024,6 +1047,7 @@ const profileRemoveBtn = document.getElementById('profileRemoveBtn');
 const profileNameInput = document.getElementById('profileNameInput');
 const profileBioInput = document.getElementById('profileBioInput');
 const profileSaveBtn = document.getElementById('profileSaveBtn');
+const profileSignOutBtn = document.getElementById('profileSignOutBtn');
 
 const partnerModal = document.getElementById('partnerModal');
 const partnerModalClose = document.getElementById('partnerModalClose');
@@ -1060,27 +1084,50 @@ function initialAvatar(name, glyph) {
     return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
 }
 
-// Affiche la photo du profil, ou l'initiale si pas de photo (ou photo introuvable hors ligne)
+// Affiche la photo du profil, ou l'initiale si pas de photo
 function setAvatarImg(img, profile, name, glyph) {
     if (!img) return;
     const fallback = initialAvatar(name, glyph);
     img.onerror = () => { img.onerror = null; img.src = fallback; };
-    img.src = (profile && profile.avatar_url) || fallback;
+
+    const path = profile && profile.avatar_url;
+    if (!path) {
+        img.src = fallback;
+        return;
+    }
+    const ready = cachedMediaUrl(path);
+    if (ready) {
+        if (img.getAttribute('src') !== ready) img.src = ready;   // évite de clignoter à chaque mise à jour
+        return;
+    }
+    if (!img.getAttribute('src')) img.src = fallback;
+    mediaUrl(path).then(url => { if (url) img.src = url; });
 }
 
-// L'autre personne : dernier expéditeur différent de moi, sinon un autre profil existant
+// L'autre personne : le seul autre profil connu, sinon le dernier expéditeur
 function getPartnerId() {
-    for (let i = messageCache.length - 1; i >= 0; i--) {
-        if (messageCache[i].sender && messageCache[i].sender !== myName) return messageCache[i].sender;
+    const others = Object.keys(profiles).filter(k => k !== myId);
+    if (others.length) {
+        others.sort((a, b) => String(profiles[b].updated_at || '')
+            .localeCompare(String(profiles[a].updated_at || '')));
+        return others[0];
     }
-    const others = Object.keys(profiles).filter(k => k !== myName);
-    others.sort((a, b) => String(profiles[b].updated_at || '').localeCompare(String(profiles[a].updated_at || '')));
-    return others[0] || null;
+    for (let i = messageCache.length - 1; i >= 0; i--) {
+        if (messageCache[i].sender_id && messageCache[i].sender_id !== myId) {
+            return messageCache[i].sender_id;
+        }
+    }
+    return null;
 }
 
 function partnerDisplayName(partnerId) {
     const partner = partnerId ? profiles[partnerId] : null;
-    return (partner && partner.display_name) || partnerId || 'Mon Amour';
+    return (partner && partner.display_name) || 'Mon Amour';
+}
+
+function myDisplayName() {
+    const me = profiles[myId];
+    return (me && me.display_name) || (window.chatAuth && window.chatAuth.email) || 'Moi';
 }
 
 function refreshProfileUI() {
@@ -1089,10 +1136,8 @@ function refreshProfileUI() {
     const partnerName = partnerDisplayName(partnerId);
 
     if (partnerNameEl) partnerNameEl.textContent = partnerName;
-    setAvatarImg(partnerAvatarEl, partner, partnerName, partnerId ? null : '❤️');
-
-    const me = profiles[myName];
-    setAvatarImg(meAvatarEl, me, (me && me.display_name) || myName);
+    setAvatarImg(partnerAvatarEl, partner, partnerName, partner && partner.display_name ? null : '❤️');
+    setAvatarImg(meAvatarEl, profiles[myId], myDisplayName());
 }
 
 async function loadProfiles() {
@@ -1100,7 +1145,7 @@ async function loadProfiles() {
         const { data, error } = await supabaseClient.from('profiles').select('*');
         if (error) {
             console.warn('Profils non chargés :', error.message);
-            return; // hors ligne ou table absente : on garde la copie locale
+            return;   // hors ligne : on garde la copie locale
         }
         const map = {};
         data.forEach(p => { map[p.id] = p; });
@@ -1112,7 +1157,7 @@ async function loadProfiles() {
     }
 }
 
-// Canal séparé : si la table "profiles" n'est pas prête, la messagerie continue de fonctionner
+// Canal séparé : si la table "profiles" n'est pas prête, la messagerie continue
 function initProfilesChannel() {
     supabaseClient
         .channel('chat-prive-profiles')
@@ -1145,15 +1190,9 @@ async function makeAvatarBlob(file, size = 256) {
     return blob;
 }
 
-function avatarPathFromUrl(url) {
-    const m = /\/object\/public\/media\/(.+)$/.exec(url || '');
-    return m ? decodeURIComponent(m[1].split('?')[0]) : null;
-}
-
-// Supprime l'ancienne photo du stockage (uniquement dans le dossier avatars/)
-async function deleteAvatarFile(url) {
-    const path = avatarPathFromUrl(url);
-    if (!path || !path.startsWith('avatars/')) return;
+// Supprime l'ancienne photo du stockage (uniquement dans mon dossier avatars)
+async function deleteAvatarFile(path) {
+    if (!path || !path.startsWith(`${myId}/avatars/`)) return;
     try {
         await supabaseClient.storage.from('media').remove([path]);
     } catch (e) { /* pas grave */ }
@@ -1164,19 +1203,19 @@ function clearAvatarPreview() {
 }
 
 function updateRemoveBtn() {
-    const me = profiles[myName];
+    const me = profiles[myId];
     const hasPhoto = avatarDraft.blob || (!avatarDraft.removed && me && me.avatar_url);
     if (profileRemoveBtn) profileRemoveBtn.style.display = hasPhoto ? 'inline-block' : 'none';
 }
 
 function openProfileModal() {
-    const me = profiles[myName] || {};
+    const me = profiles[myId] || {};
     clearAvatarPreview();
     avatarDraft = { blob: null, previewUrl: null, removed: false };
 
-    profileNameInput.value = me.display_name || myName;
+    profileNameInput.value = me.display_name || '';
     profileBioInput.value = me.bio || '';
-    setAvatarImg(profileAvatarPreview, me, me.display_name || myName);
+    setAvatarImg(profileAvatarPreview, me, myDisplayName());
     updateRemoveBtn();
     profileModal.classList.add('open');
 }
@@ -1196,7 +1235,7 @@ function openPartnerModal() {
     partnerModalName.textContent = name;
     partnerModalBio.textContent = bio;
     partnerModalBio.style.display = bio ? 'block' : 'none';
-    setAvatarImg(partnerModalAvatar, partner, name, partnerId ? null : '❤️');
+    setAvatarImg(partnerModalAvatar, partner, name, partner && partner.display_name ? null : '❤️');
     partnerModal.classList.add('open');
 }
 
@@ -1205,7 +1244,7 @@ function closePartnerModal() {
 }
 
 async function saveMyProfile() {
-    if (savingProfile) return;
+    if (savingProfile || !myId) return;
     if (!navigator.onLine) {
         alert("Pas de connexion : ton profil ne peut être enregistré qu'en ligne.");
         return;
@@ -1216,13 +1255,13 @@ async function saveMyProfile() {
     profileSaveBtn.textContent = 'Enregistrement…';
 
     try {
-        const old = profiles[myName] || {};
-        let avatarUrl = avatarDraft.removed ? null : (old.avatar_url || null);
+        const old = profiles[myId] || {};
+        let avatarPath = avatarDraft.removed ? null : (old.avatar_url || null);
         let uploadedNew = false;
 
-        // 1. Nouvelle photo : envoi dans le dossier avatars/
+        // 1. Nouvelle photo : envoi dans mon dossier personnel
         if (avatarDraft.blob) {
-            const path = `avatars/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.jpg`;
+            const path = `${myId}/avatars/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.jpg`;
             const { error } = await supabaseClient.storage
                 .from('media')
                 .upload(path, avatarDraft.blob, { contentType: 'image/jpeg' });
@@ -1233,15 +1272,15 @@ async function saveMyProfile() {
                     : 'Photo non enregistrée : ' + error.message);
                 return;
             }
-            avatarUrl = supabaseClient.storage.from('media').getPublicUrl(path).data.publicUrl;
+            avatarPath = path;
             uploadedNew = true;
         }
 
         // 2. Enregistrement du profil
         const row = {
-            id: myName,
-            display_name: profileNameInput.value.trim() || myName,
-            avatar_url: avatarUrl,
+            id: myId,
+            display_name: profileNameInput.value.trim() || null,
+            avatar_url: avatarPath,
             bio: profileBioInput.value.trim(),
             updated_at: new Date().toISOString()
         };
@@ -1252,22 +1291,20 @@ async function saveMyProfile() {
 
         if (error) {
             console.error('Erreur profil :', error);
-            if (uploadedNew) deleteAvatarFile(avatarUrl); // on ne garde pas une photo orpheline
+            if (uploadedNew) deleteAvatarFile(avatarPath);
             if (isNetworkError(error)) {
                 alert("Pas de connexion : ton profil n'a pas pu être enregistré.");
-            } else if (/profiles/i.test(error.message || '') || error.code === 'PGRST205') {
-                alert("La table « profiles » est introuvable dans Supabase : lance d'abord le script SQL des profils.");
             } else {
                 alert('Profil non enregistré : ' + error.message);
             }
             return;
         }
 
-        profiles[myName] = (data && data[0]) || row;
+        profiles[myId] = (data && data[0]) || row;
         saveProfiles();
 
         // 3. Ménage : l'ancienne photo n'est plus utile
-        if (old.avatar_url && old.avatar_url !== avatarUrl) deleteAvatarFile(old.avatar_url);
+        if (old.avatar_url && old.avatar_url !== avatarPath) deleteAvatarFile(old.avatar_url);
 
         refreshProfileUI();
         closeProfileModal();
@@ -1306,11 +1343,15 @@ if (meBtn && profileModal) {
     profileRemoveBtn.addEventListener('click', () => {
         clearAvatarPreview();
         avatarDraft = { blob: null, previewUrl: null, removed: true };
-        setAvatarImg(profileAvatarPreview, null, profileNameInput.value.trim() || myName);
+        setAvatarImg(profileAvatarPreview, null, profileNameInput.value.trim() || myDisplayName());
         updateRemoveBtn();
     });
 
     profileSaveBtn.addEventListener('click', saveMyProfile);
+}
+
+if (profileSignOutBtn) {
+    profileSignOutBtn.addEventListener('click', () => window.signOutChat());
 }
 
 if (partnerInfoEl && partnerModal) {
@@ -1326,41 +1367,22 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
-// Démarrage : on affiche tout de suite la copie locale (même sans connexion)
-renderInstant = true;
-try {
-    messageCache.forEach(m => renderMessage(m));
-    getOutbox().forEach(renderPending);
-} finally {
-    renderInstant = false;
-}
-scrollToBottom();
-refreshProfileUI();
-
-// Première ouverture : écran de bienvenue ; sinon on démarre directement
-if (hasStoredName) startApp();
-else showWelcome();
-refreshConnectionUI();
-
-// Retour / perte de connexion
-window.addEventListener('online', () => {
-    refreshConnectionUI();
-    flushOutbox();
-    setTimeout(() => { if (navigator.onLine) loadHistory(); }, 2000);
-});
-window.addEventListener('offline', refreshConnectionUI);
-setInterval(flushOutbox, 15000); // nouvelle tentative régulière tant qu'il reste des messages en attente
-
 /* ---------- Envoi de texte ---------- */
 
 if (sendBtn) {
     sendBtn.addEventListener('click', async () => {
+        if (!myId) return;
+
         if (isRecording) {
             stopAndSendRecording();
             return;
         }
         const text = messageInput.value.trim();
         if (!text) return;
+        if (text.length > 4000) {
+            alert('Message trop long (4000 caractères maximum).');
+            return;
+        }
 
         messageInput.value = '';
         updateComposerState();
@@ -1374,16 +1396,18 @@ if (sendBtn) {
         }
 
         // La bulle apparaît tout de suite (avec 🕓), elle sera confirmée quand le serveur répond
-        const tempId = addSending('text', { text: text });
+        const clientId = newClientId();
+        addSending(clientId, 'text', { text: text });
         if (LOVE_RE.test(text)) burstHearts('right');
-        const result = await insertMessage(text, 'text', tempId);
+        const result = await insertMessage(text, 'text', clientId);
+
         if (result.status === 'network') {
-            failSending(tempId);
-            queueText(text); // la connexion a lâché pendant l'envoi
+            failSending(clientId);
+            queueText(text, clientId);   // la connexion a lâché : même identifiant, donc jamais de doublon
         } else if (result.status === 'error') {
-            failSending(tempId);
-            alert("Message non envoyé : " + result.error.message);
-            messageInput.value = text; // on remet le texte si l'envoi a échoué
+            failSending(clientId);
+            alert('Message non envoyé : ' + result.error.message);
+            messageInput.value = text;   // on remet le texte si l'envoi a échoué
             updateComposerState();
         }
     });
@@ -1403,7 +1427,7 @@ if (messageInput) {
         const now = Date.now();
         if (channelReady && messageInput.value.trim() && now - lastTypingSent > 2000) {
             lastTypingSent = now;
-            realtimeChannel.send({ type: 'broadcast', event: 'typing', payload: { name: myName } });
+            realtimeChannel.send({ type: 'broadcast', event: 'typing', payload: { id: myId } });
         }
     });
 }
@@ -1412,9 +1436,12 @@ if (messageInput) {
 
 window.deleteMessageFromDB = async function (id) {
     if (!navigator.onLine) {
-        alert("Pas de connexion : suppression impossible pour le moment.");
+        alert('Pas de connexion : suppression impossible pour le moment.');
         return;
     }
+
+    const msg = cacheFind(id);
+
     const { data, error } = await supabaseClient
         .from('messages')
         .delete()
@@ -1422,14 +1449,22 @@ window.deleteMessageFromDB = async function (id) {
         .select();
 
     if (error && isNetworkError(error)) {
-        alert("Pas de connexion : suppression impossible pour le moment.");
+        alert('Pas de connexion : suppression impossible pour le moment.');
         return;
     }
     if (error || !data || data.length === 0) {
-        console.error("Erreur de suppression :", error);
-        alert("Suppression refusée par la base de données (règles RLS).");
+        console.error('Erreur de suppression :', error);
+        alert('Suppression refusée : ce message ne vous appartient pas.');
         return;
     }
+
+    // Le fichier associé n'a plus lieu d'être : on nettoie le stockage.
+    if (msg && (msg.type === 'image' || msg.type === 'audio') && msg.content.startsWith(`${myId}/`)) {
+        try {
+            await supabaseClient.storage.from('media').remove([msg.content]);
+        } catch (e) { /* pas grave */ }
+    }
+
     cacheRemove(id);
     removeMessageEl(document.getElementById(`msg-${id}`));
 };
@@ -1459,6 +1494,7 @@ async function compressImage(file, maxSize = 1024, quality = 0.75) {
 
 if (imageBtn && imageInput) {
     imageBtn.addEventListener('click', () => {
+        if (!myId) return;
         if (!navigator.onLine) {
             alert("Pas de connexion : les photos ne peuvent être envoyées qu'en ligne.");
             return;
@@ -1469,42 +1505,46 @@ if (imageBtn && imageInput) {
     imageInput.addEventListener('change', async (e) => {
         const original = e.target.files[0];
         imageInput.value = ''; // permet de renvoyer la même photo
-        if (!original) return;
+        if (!original || !myId) return;
 
         // 1. La photo apparaît tout de suite dans le chat, avec un aperçu local
+        const clientId = newClientId();
         const firstPreview = URL.createObjectURL(original);
-        const tempId = addSending('image', { previewSrc: firstPreview });
+        addSending(clientId, 'image', { previewSrc: firstPreview });
 
         // 2. Réduction de la photo (plus légère = envoi plus rapide)
         const file = await compressImage(original);
         const localUrl = URL.createObjectURL(file);
-        setSendingPreview(tempId, localUrl);
+        setSendingPreview(clientId, localUrl);
         URL.revokeObjectURL(firstPreview);
 
-        // 3. Envoi
+        if (file.size > MAX_UPLOAD_BYTES) {
+            failSending(clientId);
+            alert('Cette photo dépasse 25 Mo. Choisis une image plus légère.');
+            return;
+        }
+
+        // 3. Envoi dans mon dossier personnel
         const contentType = file.type || 'image/jpeg';
         const ext = (contentType.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
-        const fileName = `img_${Date.now()}.${ext}`;
+        const path = `${myId}/img_${Date.now()}.${ext}`;
 
         const { error } = await supabaseClient.storage
             .from('media')
-            .upload(fileName, file, { contentType: contentType });
+            .upload(path, file, { contentType: contentType });
 
         if (error) {
-            console.error("Erreur upload image :", error);
-            failSending(tempId);
+            console.error('Erreur upload image :', error);
+            failSending(clientId);
             alertUploadError('La photo', error);
             return;
         }
 
-        const { data: urlData } = supabaseClient.storage.from('media').getPublicUrl(fileName);
-        const publicUrl = urlData.publicUrl;
-        localMedia.set(publicUrl, localUrl); // pas besoin de retélécharger notre propre photo
-        setSendingKey(tempId, publicUrl);
+        localMedia.set(path, localUrl);   // pas besoin de retélécharger notre propre photo
 
-        const result = await insertMessage(publicUrl, 'image', tempId);
+        const result = await insertMessage(path, 'image', clientId);
         if (result.status !== 'ok') {
-            failSending(tempId);
+            failSending(clientId);
             alertUploadError('La photo', result.error);
         }
     });
@@ -1514,6 +1554,7 @@ if (imageBtn && imageInput) {
 
 if (recordBtn) {
     recordBtn.addEventListener('click', () => {
+        if (!myId) return;
         if (!isRecording) {
             if (!navigator.onLine) {
                 alert("Pas de connexion : les vocaux ne peuvent être envoyés qu'en ligne.");
@@ -1528,6 +1569,10 @@ if (recordBtn) {
 
 if (cancelRecBtn) {
     cancelRecBtn.addEventListener('click', cancelRecording);
+}
+
+function recordedSeconds() {
+    return recordStartedAt ? (Date.now() - recordStartedAt) / 1000 : 0;
 }
 
 async function startRecording() {
@@ -1547,6 +1592,7 @@ async function startRecording() {
 
         mediaRecorder.start(100);
         isRecording = true;
+        recordStartedAt = Date.now();
 
         const stayAtBottom = isNearBottom();
         if (recordBtn) recordBtn.classList.add('recording');
@@ -1556,17 +1602,16 @@ async function startRecording() {
 
         setupAudioVisualizer(mediaStream);
 
-        secondsRecorded = 0;
         if (recordingTimer) recordingTimer.textContent = '00:00';
 
         clearInterval(timerInterval);
         timerInterval = setInterval(() => {
-            secondsRecorded++;
-            const mins = String(Math.floor(secondsRecorded / 60)).padStart(2, '0');
-            const secs = String(secondsRecorded % 60).padStart(2, '0');
+            const s = Math.floor(recordedSeconds());
+            const mins = String(Math.floor(s / 60)).padStart(2, '0');
+            const secs = String(s % 60).padStart(2, '0');
             if (recordingTimer) recordingTimer.textContent = `${mins}:${secs}`;
-            if (secondsRecorded >= MAX_RECORD_SECONDS) stopAndSendRecording();
-        }, 1000);
+            if (s >= MAX_RECORD_SECONDS) stopAndSendRecording();
+        }, 200);
 
     } catch (err) {
         console.error("Erreur micro :", err);
@@ -1639,46 +1684,52 @@ function setupAudioVisualizer(stream) {
 function stopAndSendRecording() {
     if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
 
-    // Vocal trop court (moins d'une seconde) : on annule au lieu d'envoyer
-    if (secondsRecorded < 1) {
+    // Vocal trop court : on annule au lieu d'envoyer
+    if (recordedSeconds() < 0.6) {
         cancelRecording();
         return;
     }
+
+    const seconds = recordedSeconds();
 
     mediaRecorder.onstop = async () => {
         const fullMime = mediaRecorder.mimeType || 'audio/webm';
         const mimeType = fullMime.split(';')[0];               // ex : audio/webm
         const ext = mimeType.includes('mp4') ? 'm4a' : 'webm'; // extension cohérente
         const audioBlob = new Blob(audioChunks, { type: mimeType });
-        const seconds = secondsRecorded;
 
         // On libère tout de suite le micro et la barre d'enregistrement : l'envoi continue en arrière-plan
         cleanupAudio();
         if (audioBlob.size === 0) return;
 
+        if (audioBlob.size > MAX_UPLOAD_BYTES) {
+            alert('Ce vocal dépasse 25 Mo.');
+            return;
+        }
+
+        const clientId = newClientId();
         const localUrl = URL.createObjectURL(audioBlob);
-        const tempId = addSending('audio', { seconds: seconds });
-        const fileName = `vocal_${Date.now()}_${Math.max(1, Math.round(seconds))}s.${ext}`;
+        addSending(clientId, 'audio', { seconds: seconds });
+
+        // La durée est écrite dans le nom du fichier : le lecteur l'affiche sans rien télécharger
+        const path = `${myId}/vocal_${Date.now()}_${Math.max(1, Math.round(seconds))}s.${ext}`;
 
         const { error } = await supabaseClient.storage
             .from('media')
-            .upload(fileName, audioBlob, { contentType: mimeType });
+            .upload(path, audioBlob, { contentType: mimeType });
 
         if (error) {
-            console.error("Erreur upload vocal :", error);
-            failSending(tempId);
+            console.error('Erreur upload vocal :', error);
+            failSending(clientId);
             alertUploadError('Le vocal', error);
             return;
         }
 
-        const { data: urlData } = supabaseClient.storage.from('media').getPublicUrl(fileName);
-        const publicUrl = urlData.publicUrl;
-        localMedia.set(publicUrl, localUrl); // on peut réécouter tout de suite sans retélécharger
-        setSendingKey(tempId, publicUrl);
+        localMedia.set(path, localUrl);   // on peut réécouter tout de suite sans retélécharger
 
-        const result = await insertMessage(publicUrl, 'audio', tempId);
+        const result = await insertMessage(path, 'audio', clientId);
         if (result.status !== 'ok') {
-            failSending(tempId);
+            failSending(clientId);
             alertUploadError('Le vocal', result.error);
         }
     };
@@ -1694,6 +1745,7 @@ function cancelRecording() {
 
 function cleanupAudio() {
     isRecording = false;
+    recordStartedAt = 0;
     if (composerEl) composerEl.classList.remove('is-recording');
     if (recordBtn) recordBtn.classList.remove('recording');
     if (activityBar) activityBar.classList.remove('active');
@@ -1745,10 +1797,43 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeImageModal();
 });
 
-/* ---------- Service worker : ouverture de l'application sans connexion ---------- */
+/* ---------- Démarrage, déclenché par auth.js une fois connecté ---------- */
 
-if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-        navigator.serviceWorker.register('sw.js').catch(err => console.error('Service worker :', err));
+function startChat() {
+    myId = window.chatAuth.userId;
+
+    // On affiche tout de suite la copie locale (même sans connexion)
+    renderInstant = true;
+    try {
+        messageCache.forEach(m => renderMessage(m));
+        getOutbox().forEach(renderPending);
+    } finally {
+        renderInstant = false;
+    }
+    scrollToBottom();
+    refreshProfileUI();
+
+    initChat();
+    initProfilesChannel();
+    refreshConnectionUI();
+
+    // Retour / perte de connexion
+    window.addEventListener('online', () => {
+        refreshConnectionUI();
+        flushOutbox();
+        setTimeout(() => { if (navigator.onLine) loadHistory(); }, 2000);
     });
+    window.addEventListener('offline', refreshConnectionUI);
+    setInterval(flushOutbox, 15000); // nouvelle tentative régulière tant qu'il reste des messages en attente
 }
+
+// On démarre dès que auth.js prévient que la connexion est faite — ou tout
+// de suite si c'était déjà le cas avant que ce fichier finisse de charger.
+let chatBooted = false;
+function tryStartChat() {
+    if (chatBooted || !window.chatAuth || !window.chatAuth.userId) return;
+    chatBooted = true;
+    startChat();
+}
+document.addEventListener('chat-auth-ready', tryStartChat);
+if (window.chatAuth && window.chatAuth.ready) tryStartChat();

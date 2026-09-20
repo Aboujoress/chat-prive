@@ -25,9 +25,38 @@
         })();
     </script>
 
+    <!-- Nettoyage unique par appareil : supprime les anciens "service workers" et leurs copies en cache
+         (le mode hors ligne de l'application est suspendu, comme tu l'avais décidé). -->
+    <script>
+        (function () {
+            var KEY = 'swCleanupV3';
+            try { if (localStorage.getItem(KEY)) return; } catch (e) { return; }
+            var jobs = [];
+            var changed = false;
+            if ('serviceWorker' in navigator) {
+                jobs.push(navigator.serviceWorker.getRegistrations().then(function (regs) {
+                    if (regs.length) changed = true;
+                    return Promise.all(regs.map(function (r) { return r.unregister(); }));
+                }));
+            }
+            if (window.caches) {
+                jobs.push(caches.keys().then(function (names) {
+                    if (names.length) changed = true;
+                    return Promise.all(names.map(function (n) { return caches.delete(n); }));
+                }));
+            }
+            function done() {
+                try { localStorage.setItem(KEY, '1'); } catch (e) {}
+                if (changed) location.reload();
+            }
+            Promise.all(jobs).then(done, done);
+        })();
+    </script>
+
     <link rel="preload" href="fonts/bricolage-grotesque.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="fonts/fraunces.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="auth.css">
 </head>
 <body>
 
@@ -152,6 +181,7 @@
             </div>
 
             <button type="button" class="profile-save" id="profileSaveBtn">Enregistrer</button>
+            <button type="button" class="profile-signout" id="profileSignOutBtn">Se déconnecter</button>
         </div>
     </div>
 
@@ -173,25 +203,40 @@
         <img id="modalImg" src="" alt="Aperçu">
     </div>
 
-    <!-- ÉCRAN DE BIENVENUE (première ouverture seulement) -->
-    <div class="welcome" id="welcome">
+    <!-- ÉCRAN DE CONNEXION : recouvre tout tant que personne n'est identifié -->
+    <div class="login-screen" id="loginScreen">
         <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
-        <div class="welcome-card">
-            <div class="welcome-logo">
-                <svg viewBox="0 0 64 64" width="54" height="54" aria-hidden="true">
+        <form class="login-card" id="loginForm" autocomplete="on">
+            <div class="login-logo">
+                <svg viewBox="0 0 64 64" width="52" height="52" aria-hidden="true">
                     <path d="M12 16a8 8 0 0 1 8-8h24a8 8 0 0 1 8 8v20a8 8 0 0 1-8 8H30l-10 10V44a8 8 0 0 1-8-8V16z" fill="#fff"/>
                     <path d="M32 35c-6-4-9-7-9-11a5 5 0 0 1 9-3 5 5 0 0 1 9 3c0 4-3 7-9 11z" style="fill: var(--a1)"/>
                 </svg>
             </div>
-            <h1>Bienvenue</h1>
-            <p>Cet espace est réservé à vous deux. Entre ton prénom pour commencer : il identifie tes messages.</p>
-            <input type="text" id="welcomeInput" maxlength="30" placeholder="Ton prénom" autocomplete="off" enterkeyhint="go">
-            <button type="button" class="welcome-btn" id="welcomeBtn">Entrer dans le chat</button>
-        </div>
+            <h1>Mon Chat Privé</h1>
+            <p class="login-intro">Connecte-toi pour retrouver votre conversation.</p>
+
+            <p class="login-error" id="loginError" role="alert"></p>
+
+            <label class="login-field">Adresse e-mail
+                <input type="email" id="loginEmail" name="email" autocomplete="username" inputmode="email" autocapitalize="none" spellcheck="false" required>
+            </label>
+            <label class="login-field">Mot de passe
+                <span class="login-pass">
+                    <input type="password" id="loginPassword" name="password" autocomplete="current-password" required>
+                    <button type="button" class="login-eye" id="loginToggle" aria-label="Afficher le mot de passe">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+                    </button>
+                </span>
+            </label>
+
+            <button type="submit" class="login-btn" id="loginSubmit">Se connecter</button>
+        </form>
     </div>
 
-    <!-- SCRIPTS : Supabase (copie locale) d'abord, puis chat.js une seule fois -->
+    <!-- SCRIPTS : Supabase, puis la connexion, puis le chat -->
     <script src="supabase.js"></script>
+    <script src="auth.js"></script>
     <script src="chat.js"></script>
 </body>
 </html>

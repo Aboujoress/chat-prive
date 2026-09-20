@@ -1,142 +1,165 @@
 // =====================================================================
-//  AUTHENTIFICATION
-//  Ce fichier se charge AVANT chat.js. Il crée le client Supabase,
-//  affiche l'écran de connexion tant que personne n'est identifié,
-//  puis appelle window.startChat().
+//  AUTHENTIFICATION — connexion par e-mail et mot de passe (Supabase Auth)
+//  Ce fichier se charge AVANT chat.js. Tout est enfermé dans une fonction :
+//  aucun de ses noms ne peut entrer en conflit avec ceux de chat.js.
+//  Il expose seulement : window.supabaseClient, window.chatAuth
+//  et window.signOutChat.
 // =====================================================================
+(function () {
+    const SUPABASE_URL = 'https://ocquhbznrqbezhnjxaml.supabase.co';
+    const SUPABASE_KEY = 'sb_publishable_kDdbAVit-5dBPLA7JxNA7Q_nlskMKw9';
 
-const SUPABASE_URL = 'https://ocquhbznrqbezhnjxaml.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_kDdbAVit-5dBPLA7JxNA7Q_nlskMKw9';
+    const client = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+        auth: {
+            persistSession: true,      // la session survit à la fermeture de l'app
+            autoRefreshToken: true,
+            detectSessionInUrl: false
+        }
+    });
 
-const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
-    auth: {
-        persistSession: true,      // la session survit à la fermeture de l'app
-        autoRefreshToken: true,
-        detectSessionInUrl: false
+    window.supabaseClient = client;
+    window.chatAuth = { userId: null, email: null, ready: false };
+
+    const loginScreen = document.getElementById('loginScreen');
+    const loginForm = document.getElementById('loginForm');
+    const loginEmail = document.getElementById('loginEmail');
+    const loginPassword = document.getElementById('loginPassword');
+    const loginSubmit = document.getElementById('loginSubmit');
+    const loginError = document.getElementById('loginError');
+    const loginToggle = document.getElementById('loginToggle');
+
+    let signingOut = false;
+
+    function showLogin(message) {
+        if (message) {
+            loginError.textContent = message;
+            loginError.classList.add('show');
+        } else {
+            loginError.textContent = '';
+            loginError.classList.remove('show');
+        }
+        loginScreen.classList.add('open');
+        document.body.classList.add('locked');
+        setTimeout(() => (loginEmail.value ? loginPassword : loginEmail).focus(), 150);
     }
-});
 
-window.supabaseClient = supabaseClient;
-window.chatAuth = { userId: null, email: null };
-
-const loginScreen = document.getElementById('loginScreen');
-const loginForm = document.getElementById('loginForm');
-const loginEmail = document.getElementById('loginEmail');
-const loginPassword = document.getElementById('loginPassword');
-const loginSubmit = document.getElementById('loginSubmit');
-const loginError = document.getElementById('loginError');
-
-let chatStarted = false;
-
-function showLogin(message) {
-    if (message) {
-        loginError.textContent = message;
-        loginError.classList.add('show');
-    } else {
-        loginError.textContent = '';
-        loginError.classList.remove('show');
+    function hideLogin() {
+        loginScreen.classList.remove('open');
+        document.body.classList.remove('locked');
+        loginPassword.value = '';
     }
-    loginScreen.classList.add('open');
-    document.body.classList.add('locked');
-    setTimeout(() => loginEmail.focus(), 100);
-}
 
-function hideLogin() {
-    loginScreen.classList.remove('open');
-    document.body.classList.remove('locked');
-    loginPassword.value = '';
-}
-
-// Le chat ne démarre qu'une fois, même si la session est rafraîchie ensuite.
-// On passe par un évènement plutôt que d'appeler startChat() directement :
-// ça évite tout problème selon l'ordre exact de chargement des fichiers.
-function enterChat(session) {
-    window.chatAuth.userId = session.user.id;
-    window.chatAuth.email = session.user.email;
-    window.chatAuth.ready = true;
-    hideLogin();
-    document.dispatchEvent(new CustomEvent('chat-auth-ready'));
-}
-
-// Messages d'erreur en français, plus parlants que ceux de Supabase
-function friendlyError(error) {
-    const msg = String((error && error.message) || '').toLowerCase();
-    if (/invalid login credentials/.test(msg)) {
-        return 'Adresse e-mail ou mot de passe incorrect.';
-    }
-    if (/email not confirmed/.test(msg)) {
-        return "Ce compte n'est pas encore confirmé. Active-le depuis le tableau de bord Supabase.";
-    }
-    if (/failed to fetch|network/.test(msg) || !navigator.onLine) {
-        return 'Pas de connexion. La première connexion doit se faire en ligne.';
-    }
-    return 'Connexion impossible : ' + ((error && error.message) || 'erreur inconnue');
-}
-
-loginForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-
-    const email = loginEmail.value.trim();
-    const password = loginPassword.value;
-    if (!email || !password) return;
-
-    loginSubmit.disabled = true;
-    loginSubmit.textContent = 'Connexion…';
-    loginError.classList.remove('show');
-
-    try {
-        const { data, error } = await supabaseClient.auth.signInWithPassword({
-            email: email,
-            password: password
-        });
-
-        if (error || !data.session) {
-            showLogin(friendlyError(error));
+    // Le chat démarre une seule fois. On prévient chat.js par un évènement
+    // (et par window.chatAuth.ready) : ça marche quel que soit l'ordre de chargement.
+    function enterChat(session) {
+        if (window.chatAuth.ready) {          // session simplement rafraîchie : rien à refaire
+            hideLogin();
             return;
         }
-        enterChat(data.session);
-    } finally {
-        loginSubmit.disabled = false;
-        loginSubmit.textContent = 'Se connecter';
+        window.chatAuth.userId = session.user.id;
+        window.chatAuth.email = session.user.email;
+        window.chatAuth.ready = true;
+        hideLogin();
+        document.dispatchEvent(new CustomEvent('chat-auth-ready'));
     }
-});
 
-// Déconnexion (bouton dans la fenêtre "Mon profil")
-window.signOutChat = async function () {
-    if (!confirm('Se déconnecter de cet appareil ?')) return;
-    try {
-        await supabaseClient.auth.signOut();
-    } catch (e) { /* on recharge quand même */ }
-    // On efface la copie locale des messages : un autre compte ne doit
-    // pas retrouver la conversation en ouvrant l'application.
-    try {
-        localStorage.removeItem('chatCache');
-        localStorage.removeItem('chatOutbox');
-        localStorage.removeItem('chatProfiles');
-        localStorage.removeItem('chatMediaUrls');
-    } catch (e) { /* rien de grave */ }
-    location.reload();
-};
-
-// Si la session expire ou est révoquée pendant l'utilisation
-supabaseClient.auth.onAuthStateChange((event, session) => {
-    if (event === 'SIGNED_OUT' || (!session && chatStarted)) {
-        location.reload();
+    // Messages d'erreur en français, plus parlants que ceux de Supabase
+    function friendlyError(error) {
+        const msg = String((error && error.message) || '').toLowerCase();
+        if (/invalid login credentials/.test(msg)) {
+            return 'Adresse e-mail ou mot de passe incorrect.';
+        }
+        if (/email not confirmed/.test(msg)) {
+            return "Ce compte n'est pas encore confirmé. Active-le depuis le tableau de bord Supabase.";
+        }
+        if (/failed to fetch|network|load failed/.test(msg) || !navigator.onLine) {
+            return 'Pas de connexion. La première connexion doit se faire en ligne.';
+        }
+        return 'Connexion impossible : ' + ((error && error.message) || 'erreur inconnue');
     }
-});
 
-// Démarrage : la session enregistrée est lue localement, donc l'application
-// s'ouvre aussi hors ligne si on s'est déjà connecté une fois.
-(async function boot() {
-    try {
-        const { data } = await supabaseClient.auth.getSession();
-        if (data && data.session) {
+    loginForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const email = loginEmail.value.trim();
+        const password = loginPassword.value;
+        if (!email || !password) return;
+
+        loginSubmit.disabled = true;
+        loginSubmit.textContent = 'Connexion…';
+        loginError.classList.remove('show');
+
+        try {
+            const { data, error } = await client.auth.signInWithPassword({
+                email: email,
+                password: password
+            });
+
+            if (error || !data || !data.session) {
+                showLogin(friendlyError(error));
+                return;
+            }
             enterChat(data.session);
-        } else {
+        } catch (err) {
+            showLogin(friendlyError(err));
+        } finally {
+            loginSubmit.disabled = false;
+            loginSubmit.textContent = 'Se connecter';
+        }
+    });
+
+    // Œil : afficher / masquer le mot de passe
+    if (loginToggle) {
+        loginToggle.addEventListener('click', () => {
+            const visible = loginPassword.type === 'text';
+            loginPassword.type = visible ? 'password' : 'text';
+            loginToggle.classList.toggle('on', !visible);
+            loginToggle.setAttribute('aria-label', visible ? 'Afficher le mot de passe' : 'Masquer le mot de passe');
+            loginPassword.focus();
+        });
+    }
+
+    // Déconnexion (bouton dans la fenêtre "Mon profil")
+    window.signOutChat = async function () {
+        if (!confirm('Se déconnecter de cet appareil ?')) return;
+        signingOut = true;
+
+        // D'abord on efface la copie locale de la conversation : un autre compte
+        // ne doit pas la retrouver en ouvrant l'application sur cet appareil.
+        try {
+            localStorage.removeItem('chatCache');
+            localStorage.removeItem('chatOutbox');
+            localStorage.removeItem('chatProfiles');
+            localStorage.removeItem('chatMediaUrls');
+        } catch (e) { /* rien de grave */ }
+
+        try {
+            await client.auth.signOut();
+        } catch (e) { /* on recharge quand même */ }
+        location.reload();
+    };
+
+    // Si la session expire ou est révoquée pendant l'utilisation
+    client.auth.onAuthStateChange((event, session) => {
+        if (signingOut) return;
+        if (event === 'SIGNED_OUT' || (!session && window.chatAuth.ready)) {
+            location.reload();
+        }
+    });
+
+    // Démarrage : la session enregistrée est lue localement, donc l'application
+    // reprend directement si on s'est déjà connecté une fois.
+    (async function boot() {
+        try {
+            const { data } = await client.auth.getSession();
+            if (data && data.session) {
+                enterChat(data.session);
+            } else {
+                showLogin();
+            }
+        } catch (e) {
+            console.error('Session illisible :', e);
             showLogin();
         }
-    } catch (e) {
-        console.error('Session illisible :', e);
-        showLogin();
-    }
+    })();
 })();
