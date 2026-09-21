@@ -120,17 +120,21 @@
     }
 
     // Déconnexion (bouton dans la fenêtre "Mon profil")
-    window.signOutChat = async function () {
-        if (!confirm('Se déconnecter de cet appareil ?')) return;
+    window.signOutChat = async function (options) {
+        if (!(options && options.skipConfirm) && !confirm('Se déconnecter de cet appareil ?')) return;
         signingOut = true;
 
-        // D'abord on efface la copie locale de la conversation : un autre compte
-        // ne doit pas la retrouver en ouvrant l'application sur cet appareil.
+        // Cet appareil ne doit plus recevoir les notifications de ce compte
+        // (à faire AVANT la déconnexion, tant qu'on est encore identifié).
         try {
-            localStorage.removeItem('chatCache');
-            localStorage.removeItem('chatOutbox');
-            localStorage.removeItem('chatProfiles');
-            localStorage.removeItem('chatMediaUrls');
+            if (window.chatPush) await window.chatPush.onSignOut();
+        } catch (e) { /* on continue */ }
+
+        // On efface la copie locale de la conversation et le code d'accès : un autre
+        // compte ne doit pas retrouver la conversation sur cet appareil.
+        try {
+            ['chatCache', 'chatOutbox', 'chatProfiles', 'chatMediaUrls', 'chatReactions',
+             'chatReceipts', 'chatLock', 'chatLockFails', 'chatLockPrefs'].forEach((k) => localStorage.removeItem(k));
         } catch (e) { /* rien de grave */ }
 
         try {

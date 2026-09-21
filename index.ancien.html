@@ -25,38 +25,9 @@
         })();
     </script>
 
-    <!-- Nettoyage unique par appareil : supprime les anciens "service workers" et leurs copies en cache
-         (le mode hors ligne de l'application est suspendu, comme tu l'avais décidé). -->
-    <script>
-        (function () {
-            var KEY = 'swCleanupV3';
-            try { if (localStorage.getItem(KEY)) return; } catch (e) { return; }
-            var jobs = [];
-            var changed = false;
-            if ('serviceWorker' in navigator) {
-                jobs.push(navigator.serviceWorker.getRegistrations().then(function (regs) {
-                    if (regs.length) changed = true;
-                    return Promise.all(regs.map(function (r) { return r.unregister(); }));
-                }));
-            }
-            if (window.caches) {
-                jobs.push(caches.keys().then(function (names) {
-                    if (names.length) changed = true;
-                    return Promise.all(names.map(function (n) { return caches.delete(n); }));
-                }));
-            }
-            function done() {
-                try { localStorage.setItem(KEY, '1'); } catch (e) {}
-                if (changed) location.reload();
-            }
-            Promise.all(jobs).then(done, done);
-        })();
-    </script>
-
     <link rel="preload" href="fonts/bricolage-grotesque.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="fonts/fraunces.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="stylesheet" href="style.css">
-    <link rel="stylesheet" href="auth.css">
 </head>
 <body>
 
@@ -113,17 +84,6 @@
             <span>❤️</span><span>😍</span><span>🥰</span><span>😘</span><span>😂</span><span>🤗</span><span>😊</span><span>😉</span>
             <span>🔥</span><span>✨</span><span>💕</span><span>💖</span><span>👍</span><span>🙏</span><span>🎉</span><span>😢</span>
             <span>😴</span><span>🤔</span><span>😅</span><span>🌹</span><span>💋</span><span>💌</span><span>☀️</span><span>🌙</span>
-        </div>
-
-        <!-- RÉPONSE À UN MESSAGE PRÉCIS -->
-        <div class="reply-bar" id="replyBar">
-            <div class="reply-bar-body">
-                <strong id="replyBarWho"></strong>
-                <span id="replyBarText"></span>
-            </div>
-            <button type="button" class="reply-bar-cancel" id="replyBarCancel" aria-label="Annuler la réponse">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
-            </button>
         </div>
 
         <!-- BARRE DE SAISIE -->
@@ -191,40 +151,7 @@
                 </div>
             </div>
 
-            <div class="profile-section">
-                <span class="profile-label">Notifications</span>
-                <p class="settings-note" id="pushStatus"></p>
-                <button type="button" class="settings-btn" id="pushToggleBtn">Activer les notifications</button>
-                <label class="switch-row" id="pushPreviewRow" style="display: none;">
-                    <span>Afficher le texte du message</span>
-                    <input type="checkbox" class="switch" id="pushPreviewToggle" checked>
-                </label>
-            </div>
-
-            <div class="profile-section">
-                <span class="profile-label">Confidentialité</span>
-                <label class="switch-row">
-                    <span>Confirmations de lecture (« vu »)</span>
-                    <input type="checkbox" class="switch" id="readReceiptsToggle" checked>
-                </label>
-            </div>
-
-            <div class="profile-section">
-                <span class="profile-label">Code d'accès</span>
-                <p class="settings-note" id="lockStatus"></p>
-                <button type="button" class="settings-btn" id="lockEnableBtn">Activer un code</button>
-                <div class="settings-duo">
-                    <button type="button" class="settings-btn" id="lockChangeBtn" style="display: none;">Changer le code</button>
-                    <button type="button" class="settings-btn danger" id="lockDisableBtn" style="display: none;">Désactiver</button>
-                </div>
-                <label class="switch-row" id="lockDelayRow" style="display: none;">
-                    <span>Verrouiller</span>
-                    <select class="settings-select" id="lockDelaySelect"></select>
-                </label>
-            </div>
-
             <button type="button" class="profile-save" id="profileSaveBtn">Enregistrer</button>
-            <button type="button" class="profile-signout" id="profileSignOutBtn">Se déconnecter</button>
         </div>
     </div>
 
@@ -246,78 +173,25 @@
         <img id="modalImg" src="" alt="Aperçu">
     </div>
 
-    <!-- ÉCRAN DE CONNEXION : recouvre tout tant que personne n'est identifié -->
-    <div class="login-screen" id="loginScreen">
+    <!-- ÉCRAN DE BIENVENUE (première ouverture seulement) -->
+    <div class="welcome" id="welcome">
         <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
-        <form class="login-card" id="loginForm" autocomplete="on">
-            <div class="login-logo">
-                <svg viewBox="0 0 64 64" width="52" height="52" aria-hidden="true">
+        <div class="welcome-card">
+            <div class="welcome-logo">
+                <svg viewBox="0 0 64 64" width="54" height="54" aria-hidden="true">
                     <path d="M12 16a8 8 0 0 1 8-8h24a8 8 0 0 1 8 8v20a8 8 0 0 1-8 8H30l-10 10V44a8 8 0 0 1-8-8V16z" fill="#fff"/>
                     <path d="M32 35c-6-4-9-7-9-11a5 5 0 0 1 9-3 5 5 0 0 1 9 3c0 4-3 7-9 11z" style="fill: var(--a1)"/>
                 </svg>
             </div>
-            <h1>Mon Chat Privé</h1>
-            <p class="login-intro">Connecte-toi pour retrouver votre conversation.</p>
-
-            <p class="login-error" id="loginError" role="alert"></p>
-
-            <label class="login-field">Adresse e-mail
-                <input type="email" id="loginEmail" name="email" autocomplete="username" inputmode="email" autocapitalize="none" spellcheck="false" required>
-            </label>
-            <label class="login-field">Mot de passe
-                <span class="login-pass">
-                    <input type="password" id="loginPassword" name="password" autocomplete="current-password" required>
-                    <button type="button" class="login-eye" id="loginToggle" aria-label="Afficher le mot de passe">
-                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
-                    </button>
-                </span>
-            </label>
-
-            <button type="submit" class="login-btn" id="loginSubmit">Se connecter</button>
-        </form>
-    </div>
-
-    <!-- MENU D'UN MESSAGE (appui long ou clic droit) -->
-    <div class="msg-menu" id="msgMenu">
-        <div class="msg-menu-backdrop" id="msgMenuBackdrop"></div>
-        <div class="msg-menu-box" id="msgMenuBox" role="menu">
-            <div class="menu-reactions" id="msgMenuReactions"></div>
-            <button type="button" class="menu-item" data-act="reply" role="menuitem">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v3"/></svg>
-                Répondre
-            </button>
-            <button type="button" class="menu-item" data-act="copy" role="menuitem">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6.5A2.5 2.5 0 0 1 7.5 4H15"/></svg>
-                Copier
-            </button>
-            <button type="button" class="menu-item danger" data-act="delete" role="menuitem">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6.5 7l1 13h9l1-13"/></svg>
-                Supprimer
-            </button>
+            <h1>Bienvenue</h1>
+            <p>Cet espace est réservé à vous deux. Entre ton prénom pour commencer : il identifie tes messages.</p>
+            <input type="text" id="welcomeInput" maxlength="30" placeholder="Ton prénom" autocomplete="off" enterkeyhint="go">
+            <button type="button" class="welcome-btn" id="welcomeBtn">Entrer dans le chat</button>
         </div>
     </div>
 
-    <!-- ÉCRAN DE VERROUILLAGE (code d'accès) -->
-    <div class="lock-screen" id="lockScreen">
-        <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
-        <div class="lock-card">
-            <div class="lock-logo">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9.5" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/><path d="M12 14.5v2"/></svg>
-            </div>
-            <h2 id="lockTitle">Entre ton code</h2>
-            <p class="lock-sub" id="lockSub"></p>
-            <div class="lock-dots" id="lockDots"></div>
-            <div class="lock-keys" id="lockKeys"></div>
-            <button type="button" class="lock-link" id="lockForgot">Code oublié ?</button>
-            <button type="button" class="lock-link" id="lockCancel" style="display: none;">Annuler</button>
-        </div>
-    </div>
-
-    <!-- SCRIPTS : Supabase, connexion, code d'accès, notifications, puis le chat -->
+    <!-- SCRIPTS : Supabase (copie locale) d'abord, puis chat.js une seule fois -->
     <script src="supabase.js"></script>
-    <script src="auth.js"></script>
-    <script src="lock.js"></script>
-    <script src="push.js"></script>
     <script src="chat.js"></script>
 </body>
 </html>
