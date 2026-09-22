@@ -61,3 +61,64 @@ self.addEventListener('notificationclick', (event) => {
         if (self.clients.openWindow) await self.clients.openWindow(target);
     })());
 });
+
+// Réception d'une notification push, même application fermée
+self.addEventListener('push', (event) => {
+    let data = {};
+    try { data = event.data ? event.data.json() : {}; } catch (e) { /* ignoré */ }
+
+    const title = data.title || 'Mon Chat Privé';
+    const options = {
+        body: data.body || 'Nouveau message',
+        icon: 'icon-192.png',
+        badge: 'icon-192.png',
+        tag: data.tag || 'chat-prive',
+        data: { url: data.url || './' }
+    };
+    event.waitUntil(self.registration.showNotification(title, options));
+});
+
+// Clic sur la notification : ouvre (ou réactive) l'application
+self.addEventListener('notificationclick', (event) => {
+    event.notification.close();
+    const targetUrl = (event.notification.data && event.notification.data.url) || './';
+    event.waitUntil(
+        clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+            for (const client of list) {
+                if ('focus' in client) return client.focus();
+            }
+            if (clients.openWindow) return clients.openWindow(targetUrl);
+        })
+    );
+});
+
+
+// Réception d'une notification push, même application fermée
+self.addEventListener('push', (event) => {
+    let data = {};
+    try { data = event.data ? event.data.json() : {}; } catch (e) { /* ignoré */ }
+
+    const title = data.title || 'Mon Chat Privé';
+    const options = {
+        body: data.body || 'Nouveau message',
+        icon: 'icon-192.png',
+        badge: 'icon-192.png',
+        tag: data.tag || 'chat-prive',
+        data: { url: data.url || './' }
+    };
+    event.waitUntil(self.registration.showNotification(title, options));
+});
+
+// Clic sur la notification : ouvre (ou réactive) l'application
+self.addEventListener('notificationclick', (event) => {
+    event.notification.close();
+    const targetUrl = (event.notification.data && event.notification.data.url) || './';
+    event.waitUntil(
+        clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+            for (const client of list) {
+                if ('focus' in client) return client.focus();
+            }
+            if (clients.openWindow) return clients.openWindow(targetUrl);
+        })
+    );
+});
