@@ -17,6 +17,8 @@ const CACHE_KEY = 'chatCache';
 const OUTBOX_KEY = 'chatOutbox';
 const MEDIA_URL_KEY = 'chatMediaUrls';
 const REACTIONS_KEY = 'chatReactions';
+const PINNED_KEY = 'chatPinned';
+const MAX_PINNED = 3;
 const RECEIPTS_KEY = 'chatReceipts';
 const PREFS_KEY = 'chatPrefs';
 const OLDER_PAGE = 100;              // messages ajoutés à chaque « Voir les messages plus anciens »
@@ -608,6 +610,7 @@ let replyTarget = null;              // message auquel on est en train de répon
 const messageIndex = new Map();      // id -> message (pour retrouver les citations et le menu)
 const quoteCache = new Map();        // id -> message cité, lu au serveur (null = supprimé)
 let reactionsData = readJSON(REACTIONS_KEY, {});   // messageId -> { userId: emoji }
+let pinnedMessages = readJSON(PINNED_KEY, []);   // liste d'ids, du plus récent au plus ancien
 let receipts = readJSON(RECEIPTS_KEY, {});         // userId -> dernier message lu
 let prefs = readJSON(PREFS_KEY, { readReceipts: true });
 
@@ -616,6 +619,9 @@ const replyBarWho = document.getElementById('replyBarWho');
 const replyBarText = document.getElementById('replyBarText');
 const replyBarCancel = document.getElementById('replyBarCancel');
 
+const pinnedBar = document.createElement('div');
+pinnedBar.className = 'pinned-bar';
+if (chatBodyEl) chatBodyEl.insertBefore(pinnedBar, chatMessages);
 const msgMenu = document.getElementById('msgMenu');
 const msgMenuBackdrop = document.getElementById('msgMenuBackdrop');
 const msgMenuBox = document.getElementById('msgMenuBox');
@@ -740,6 +746,98 @@ async function jumpToMessage(id, retried) {
     void el.offsetWidth;
     el.classList.add('flash');
     setTimeout(() => el.classList.remove('flash'), 1500);
+}
+/* --- Messages épinglés --- */
+
+function savePinned() {
+    writeJSON(PINNED_KEY, pinnedMessages);
+}
+
+function renderPinnedBar() {
+    if (!pinnedBar) return;
+    if (!pinnedMessages.length) {
+        pinnedBar.classList.remove('show');
+        pinnedBar.innerHTML = '';
+        return;
+    }
+    pinnedBar.classList.add('show');
+    pinnedBar.innerHTML = '';
+    pinnedMessages.forEach(id => {
+        const m = messageById(id);
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'pinned-row';
+        row.innerHTML = '<span class="pinned-icon">📌</span><span class="pinned-text"></span>';
+        row.querySelector('.pinned-text').textContent = m ? `${senderLabel(m.sender_id)} : ${messagePreview(m)}` : 'Message';
+        row.addEventListener('click', () => jumpToMessage(id));
+        pinnedBar.appendChild(row);
+    });
+}
+
+async function togglePin(id) {
+    if (!navigator.onLine) { showToast('Pas de connexion : impossible pour le moment.'); return; }
+    const already = pinnedMessages.includes(id);
+
+    if (already) {
+        pinnedMessages = pinnedMessages.filter(x => x !== id);
+        savePinned();
+        renderPinnedBar();
+        const { error } = await supabaseClient.from('pinned_messages').delete().eq('message_id', id);
+        if (error) { pinnedMessages.unshift(id); savePinned(); renderPinnedBar(); showToast('Désépinglage impossible'); }
+        return;
+    }
+
+    if (pinnedMessages.length >= MAX_PINNED) {
+        showToast(`Trois messages épinglés au maximum : désépingle-en un d'abord.`);
+        return;
+    }
+    pinnedMessages.unshift(id);
+    savePinned();
+    renderPinnedBar();
+    const { error } = await supabaseClient.from('pinned_messages')
+        .insert([{ message_id: id, pinned_by: myId }]);
+    if (error) {
+        pinnedMessages = pinnedMessages.filter(x => x !== id);
+        savePinned();
+        renderPinnedBar();
+        showToast(/pinned_messages/i.test(error.message || '') || error.code === 'PGRST205'
+            ? "La table des épingles est introuvable : lance d'abord le script SQL."
+            : 'Épinglage impossible');
+    }
+}
+
+async function loadPinned() {
+    try {
+        const { data, error } = await supabaseClient
+            .from('pinned_messages')
+            .select('message_id')
+            .order('pinned_at', { ascending: false });
+        if (error) { console.warn('Épingles non chargées :', error.message); return; }
+        pinnedMessages = data.map(r => r.message_id);
+        savePinned();
+        renderPinnedBar();
+    } catch (e) {
+        console.warn('Épingles non chargées :', e);
+    }
+}
+
+function initPinnedChannel() {
+    supabaseClient
+        .channel('chat-prive-pinned')
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'pinned_messages' }, payload => {
+            const id = payload.new.message_id;
+            if (!pinnedMessages.includes(id)) {
+                pinnedMessages.unshift(id);
+                savePinned();
+                renderPinnedBar();
+            }
+        })
+        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'pinned_messages' }, payload => {
+            pinnedMessages = pinnedMessages.filter(x => x !== payload.old.message_id);
+            savePinned();
+            renderPinnedBar();
+        })
+        .subscribe();
 }
 
 /* --- Réactions --- */
@@ -1018,6 +1116,7 @@ async function loadOlder() {
 /* --- Menu du message (appui long ou clic droit) --- */
 
 let menuMessageId = null;
+let menuOpenedAt = 0;
 
 function openMessageMenu(el) {
     const id = Number(el.dataset.id);
@@ -1038,11 +1137,17 @@ function openMessageMenu(el) {
 
     const copyBtn = msgMenuBox.querySelector('[data-act="copy"]');
     const deleteBtn = msgMenuBox.querySelector('[data-act="delete"]');
+    const pinBtn = msgMenuBox.querySelector('[data-act="pin"]');
     if (copyBtn) copyBtn.style.display = m.type === 'text' ? '' : 'none';
     if (deleteBtn) deleteBtn.style.display = m.sender_id === myId ? '' : 'none';
+    if (pinBtn) {
+    const label = pinBtn.lastChild;
+    if (label && label.nodeType === 3) label.textContent = pinnedMessages.includes(id) ? ' Désépingler' : ' Épingler';
+}
 
     el.classList.add('menu-open');
     msgMenu.classList.add('open');
+        menuOpenedAt = Date.now();
 
     // Position : sous le message, ou au-dessus s'il n'y a pas la place
     const rect = el.getBoundingClientRect();
@@ -1085,7 +1190,10 @@ function fallbackCopy(text, done) {
 }
 
 if (msgMenu) {
-    msgMenuBackdrop.addEventListener('click', closeMessageMenu);
+        msgMenuBackdrop.addEventListener('click', () => {
+        if (Date.now() - menuOpenedAt < 350) return;   // ignore le relâchement qui suit l'appui long
+        closeMessageMenu();
+    });
     msgMenu.addEventListener('contextmenu', (e) => { e.preventDefault(); closeMessageMenu(); });
     msgMenuBox.addEventListener('click', (e) => {
         const emojiBtn = e.target.closest('.menu-emoji');
@@ -1101,6 +1209,7 @@ if (msgMenu) {
             if (!m) return;
             if (act === 'reply') setReplyTarget(m);
             else if (act === 'copy') copyText(String(m.content || ''));
+            else if (act === 'pin') togglePin(id);
             else if (act === 'delete' && confirm('Supprimer ce message ?')) window.deleteMessageFromDB(id);
         }
     });
@@ -1205,6 +1314,10 @@ chatMessages.addEventListener('contextmenu', (e) => {
     if (gesture) { clearTimeout(gesture.timer); gesture = null; }
     openMessageMenu(el);
 });
+chatMessages.addEventListener('click', (e) => {
+    const callLog = e.target.closest && e.target.closest('.call-log');
+    if (callLog && window.chatCall) { window.chatCall.start(); return; }
+    const quote = e.target.closest && e.target.closest('.reply-quote');
 
 // Toucher une citation ou une réaction
 chatMessages.addEventListener('click', (e) => {
@@ -1278,6 +1391,16 @@ function renderMessage(msg, replaceEl) {
         img.addEventListener('click', () => openModal(img.src));
         applyMediaSrc(img, msg.content);
         div.appendChild(img);
+    } else if (msg.type === 'video') {
+        const video = document.createElement('video');
+        video.className = 'message-video loading';
+        video.controls = true;
+        video.playsInline = true;
+        video.preload = 'metadata';
+        video.addEventListener('loadeddata', () => video.classList.remove('loading'));
+        video.addEventListener('error', () => video.classList.remove('loading'));
+        applyMediaSrc(video, msg.content);
+        div.appendChild(video);
     } else if (msg.type === 'audio') {
         div.appendChild(buildVoicePlayer(msg.content));
     } else if (msg.type === 'call') {
@@ -1372,15 +1495,26 @@ function addSending(clientId, type, opts) {
     div.className = 'message sent pending sending';
     if (opts.replyTo) div.appendChild(buildQuote(opts.replyTo));
 
-    if (type === 'image') {
+    if (type === 'image' || type === 'video') {
         div.classList.add('media');
-        const img = document.createElement('img');
-        img.className = 'message-img loading';
-        img.alt = 'Photo en cours d\'envoi';
-        img.addEventListener('load', () => { img.classList.remove('loading'); scrollToBottom(); });
-        img.addEventListener('error', () => img.classList.remove('loading'));
-        img.src = opts.previewSrc;
-        div.appendChild(img);
+        if (opts.isVideo) {
+            const video = document.createElement('video');
+            video.className = 'message-video loading';
+            video.muted = true;
+            video.playsInline = true;
+            video.addEventListener('loadeddata', () => { video.classList.remove('loading'); scrollToBottom(); });
+            video.addEventListener('error', () => video.classList.remove('loading'));
+            video.src = opts.previewSrc;
+            div.appendChild(video);
+        } else {
+            const img = document.createElement('img');
+            img.className = 'message-img loading';
+            img.alt = 'Photo en cours d\'envoi';
+            img.addEventListener('load', () => { img.classList.remove('loading'); scrollToBottom(); });
+            img.addEventListener('error', () => img.classList.remove('loading'));
+            img.src = opts.previewSrc;
+            div.appendChild(img);
+        }
     } else {
         const p = document.createElement('p');
         p.textContent = type === 'audio'
@@ -1631,6 +1765,7 @@ async function loadHistory(opts) {
         pendingIncoming.splice(0).forEach(m => renderMessage(m));
         refreshProfileUI();
         loadReactions();
+        loadPinned();
         markReadSoon();
     }
 }
@@ -2156,61 +2291,102 @@ async function compressImage(file, maxSize = 1024, quality = 0.75) {
     }
 }
 
+const MAX_VIDEO_SECONDS = 60;
+
+// Une seule photo/vidéo, compressée puis envoyée. Réutilisé pour l'envoi multiple.
+async function sendOneMedia(file, replyTo) {
+    const isVideo = file.type.startsWith('video/');
+    const clientId = newClientId();
+
+    if (isVideo && file.size > MAX_UPLOAD_BYTES) {
+        alert('Cette vidéo dépasse 25 Mo.');
+        return;
+    }
+
+    // 1. Aperçu immédiat
+    const firstPreview = URL.createObjectURL(file);
+    addSending(clientId, isVideo ? 'video' : 'image', { previewSrc: firstPreview, isVideo: isVideo, replyTo: replyTo });
+
+    // 2. Compression (photo seulement ; les vidéos partent telles quelles)
+    let finalFile = file;
+    if (!isVideo) {
+        finalFile = await compressImage(file);
+        const localUrl = URL.createObjectURL(finalFile);
+        setSendingPreview(clientId, localUrl);
+        URL.revokeObjectURL(firstPreview);
+    }
+
+    if (finalFile.size > MAX_UPLOAD_BYTES) {
+        failSending(clientId);
+        alert(`${isVideo ? 'Cette vidéo' : 'Cette photo'} dépasse 25 Mo.`);
+        return;
+    }
+
+    // 3. Durée de la vidéo, pour vérification et affichage (comme pour les vocaux)
+    let videoSeconds = 0;
+    if (isVideo) {
+        try {
+            videoSeconds = await new Promise((resolve) => {
+                const v = document.createElement('video');
+                v.preload = 'metadata';
+                v.onloadedmetadata = () => resolve(v.duration || 0);
+                v.onerror = () => resolve(0);
+                v.src = firstPreview;
+            });
+        } catch (e) { videoSeconds = 0; }
+        if (videoSeconds > MAX_VIDEO_SECONDS) {
+            failSending(clientId);
+            alert(`Les vidéos sont limitées à ${MAX_VIDEO_SECONDS} secondes.`);
+            return;
+        }
+    }
+
+    // 4. Envoi dans mon dossier personnel
+    const contentType = finalFile.type || (isVideo ? 'video/mp4' : 'image/jpeg');
+    const ext = isVideo
+        ? (contentType.split('/')[1] || 'mp4')
+        : (contentType.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+    const durationTag = isVideo ? `_${Math.max(1, Math.round(videoSeconds))}s` : '';
+    const path = `${myId}/${isVideo ? 'vid' : 'img'}_${Date.now()}${durationTag}.${ext}`;
+
+    const { error } = await supabaseClient.storage
+        .from('media')
+        .upload(path, finalFile, { contentType: contentType });
+
+    if (error) {
+        console.error('Erreur upload média :', error);
+        failSending(clientId);
+        alertUploadError(isVideo ? 'La vidéo' : 'La photo', error);
+        return;
+    }
+
+    if (!isVideo) localMedia.set(path, URL.createObjectURL(finalFile));
+
+    const result = await insertMessage(path, isVideo ? 'video' : 'image', clientId, replyTo);
+    if (result.status !== 'ok') {
+        failSending(clientId);
+        alertUploadError(isVideo ? 'La vidéo' : 'La photo', result.error);
+    }
+}
+
 if (imageBtn && imageInput) {
     imageBtn.addEventListener('click', () => {
         if (!myId) return;
         if (!navigator.onLine) {
-            alert("Pas de connexion : les photos ne peuvent être envoyées qu'en ligne.");
+            alert("Pas de connexion : les photos et vidéos ne peuvent être envoyées qu'en ligne.");
             return;
         }
         imageInput.click();
     });
 
     imageInput.addEventListener('change', async (e) => {
-        const original = e.target.files[0];
-        imageInput.value = ''; // permet de renvoyer la même photo
-        if (!original || !myId) return;
+        const files = Array.from(e.target.files || []).slice(0, 10);   // 10 fichiers maximum d'un coup
+        imageInput.value = '';   // permet de renvoyer les mêmes fichiers
+        if (!files.length || !myId) return;
 
-        // 1. La photo apparaît tout de suite dans le chat, avec un aperçu local
-        const clientId = newClientId();
-        const replyTo = takeReplyTarget();
-        const firstPreview = URL.createObjectURL(original);
-        addSending(clientId, 'image', { previewSrc: firstPreview, replyTo: replyTo });
-
-        // 2. Réduction de la photo (plus légère = envoi plus rapide)
-        const file = await compressImage(original);
-        const localUrl = URL.createObjectURL(file);
-        setSendingPreview(clientId, localUrl);
-        URL.revokeObjectURL(firstPreview);
-
-        if (file.size > MAX_UPLOAD_BYTES) {
-            failSending(clientId);
-            alert('Cette photo dépasse 25 Mo. Choisis une image plus légère.');
-            return;
-        }
-
-        // 3. Envoi dans mon dossier personnel
-        const contentType = file.type || 'image/jpeg';
-        const ext = (contentType.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
-        const path = `${myId}/img_${Date.now()}.${ext}`;
-
-        const { error } = await supabaseClient.storage
-            .from('media')
-            .upload(path, file, { contentType: contentType });
-
-        if (error) {
-            console.error('Erreur upload image :', error);
-            failSending(clientId);
-            alertUploadError('La photo', error);
-            return;
-        }
-
-        localMedia.set(path, localUrl);   // pas besoin de retélécharger notre propre photo
-
-        const result = await insertMessage(path, 'image', clientId, replyTo);
-        if (result.status !== 'ok') {
-            failSending(clientId);
-            alertUploadError('La photo', result.error);
+        const replyTo = takeReplyTarget();   // la citation ne s'applique qu'au premier envoi du lot
+        for (let i = 0; i < files.length; i++) {
+            await sendOneMedia(files[i], i === 0 ? replyTo : null);
         }
     });
 }
@@ -2483,6 +2659,7 @@ function startChat() {
     initChat();
     initProfilesChannel();
     initExtrasChannel();
+    initPinnedChannel();
     refreshConnectionUI();
 
     // Retour / perte de connexion

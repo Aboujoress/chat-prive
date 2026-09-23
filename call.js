@@ -18,8 +18,10 @@
     let channel = null, pc = null, localStream = null, remoteAudio = null;
     let currentCallId = null, pendingOffer = null, pendingCandidates = [];
     let callState = 'idle';   // idle | calling | ringing | connected
+    let minimized = false;
     let isCaller = false;
     let ringTimer = null, durationTimer = null, callStartedAt = 0;
+    let speakerOn = false;
     let els = {};
 
     function myUserId() { return (typeof myId !== 'undefined' && myId) || (window.chatAuth && window.chatAuth.userId); }
@@ -87,6 +89,7 @@
         const overlay = document.createElement('div');
         overlay.className = 'call-overlay';
         overlay.innerHTML =
+            '<button type="button" class="call-minimize" id="callMinimizeBtn" aria-label="Réduire"><svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg></button>' +
             '<div class="call-avatar-wrap"><span class="call-ring"></span><img id="callAvatarImg" alt=""></div>' +
             '<h2 class="call-name" id="callName"></h2>' +
             '<p class="call-status" id="callStatus"></p>' +
@@ -97,6 +100,7 @@
             '<div class="call-controls call-actions-one">' +
             '<button type="button" class="call-round mute" id="callMuteBtn">' + MIC_ICON + '</button>' +
             '<button type="button" class="call-round hangup" id="callHangupBtn">' + PHONE_ICON + '</button>' +
+            '<button type="button" class="call-round speaker" id="callSpeakerBtn">' + SPEAKER_ICON + '</button>' +
             '</div>';
         document.body.appendChild(overlay);
 
@@ -110,10 +114,21 @@
             hangupBtn: overlay.querySelector('#callHangupBtn'),
             muteBtn: overlay.querySelector('#callMuteBtn')
         };
+        els.minimizeBtn = overlay.querySelector('#callMinimizeBtn');
         els.acceptBtn.addEventListener('click', acceptIncomingCall);
         els.declineBtn.addEventListener('click', () => endCall('declined'));
         els.hangupBtn.addEventListener('click', () => endCall('hangup'));
         els.muteBtn.addEventListener('click', toggleMute);
+        els.minimizeBtn.addEventListener('click', minimizeCall);
+        
+
+        const bar = document.createElement('div');
+        bar.className = 'call-bar';
+        bar.innerHTML = '<span class="call-bar-dot"></span><span id="callBarText">Appel en cours</span>';
+        bar.addEventListener('click', restoreCall);
+        document.body.appendChild(bar);
+        els.bar = bar;
+        els.barTime = bar.querySelector('#callBarText');
 
         remoteAudio = document.createElement('audio');
         remoteAudio.autoplay = true;
@@ -123,19 +138,39 @@
 
     function showOverlay(state) {
         els.overlay.dataset.state = state;
-        els.overlay.classList.add('open');
+        if (!minimized) els.overlay.classList.add('open');
         els.name.textContent = partnerName();
+        updateCallBarLabel();
         els.status.textContent = state === 'calling' ? 'Appel en cours…' : state === 'ringing' ? 'Appel entrant…' : '00:00';
         els.avatarImg.src = fallbackAvatarSrc();
         partnerAvatarUrl((url) => { if (url) els.avatarImg.src = url; });
     }
-    function hideOverlay() { els.overlay.classList.remove('open'); }
+        function hideOverlay() { els.overlay.classList.remove('open'); }
 
-    function startDurationTimer() {
+    function minimizeCall() {
+        minimized = true;
+        hideOverlay();
+        els.bar.classList.add('show');
+        updateCallBarLabel();
+    }
+    function restoreCall() {
+        minimized = false;
+        els.bar.classList.remove('show');
+        els.overlay.classList.add('open');
+    }
+    function updateCallBarLabel() {
+        if (!els.barTime) return;
+        if (callState === 'calling') els.barTime.textContent = 'Appel vers ' + partnerName() + '…';
+        else if (callState === 'connected') els.barTime.textContent = partnerName();
+    }
+
+        function startDurationTimer() {
         callStartedAt = Date.now();
         durationTimer = setInterval(() => {
             const s = Math.floor((Date.now() - callStartedAt) / 1000);
-            els.status.textContent = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+            const t = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+            els.status.textContent = t;
+            if (els.barTime) els.barTime.textContent = t;
         }, 1000);
     }
 
@@ -147,6 +182,22 @@
         const muted = !track.enabled;
         els.muteBtn.classList.toggle('on', muted);
         els.muteBtn.innerHTML = muted ? MIC_OFF_ICON : MIC_ICON;
+            const SPEAKER_ICON = '<svg viewBox="0 0 24 24"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
+    }
+        async function toggleSpeaker() {
+        if (!remoteAudio || typeof remoteAudio.setSinkId !== 'function') {
+            showToastSafe('Ton navigateur ne permet pas de changer la sortie audio ici.');
+            return;
+        }
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const speaker = devices.find(d => d.kind === 'audiooutput' && /speaker|haut/i.test(d.label));
+            await remoteAudio.setSinkId(speakerOn ? 'default' : (speaker ? speaker.deviceId : 'default'));
+            speakerOn = !speakerOn;
+            els.speakerBtn.classList.toggle('on', speakerOn);
+        } catch (e) {
+            showToastSafe('Changement de sortie audio indisponible sur cet appareil.');
+        }
     }
 
     /* ---------- Sonnerie discrète pour un appel entrant ---------- */
@@ -154,19 +205,34 @@
     function playRingSound() {
         try {
             ringAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            const beep = () => {
+
+            // Deux notes qui s'enchaînent, comme une vraie sonnerie de téléphone
+            const playNote = (freq, startAt, duration, peak) => {
                 const osc = ringAudioCtx.createOscillator();
                 const gain = ringAudioCtx.createGain();
-                osc.frequency.value = 740;
-                gain.gain.setValueAtTime(0.001, ringAudioCtx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.2, ringAudioCtx.currentTime + 0.02);
-                gain.gain.exponentialRampToValueAtTime(0.001, ringAudioCtx.currentTime + 0.4);
-                osc.connect(gain); gain.connect(ringAudioCtx.destination);
-                osc.start(); osc.stop(ringAudioCtx.currentTime + 0.4);
+                osc.type = 'sine';
+                osc.frequency.value = freq;
+                const t0 = ringAudioCtx.currentTime + startAt;
+                gain.gain.setValueAtTime(0.0001, t0);
+                gain.gain.exponentialRampToValueAtTime(peak, t0 + 0.03);
+                gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+                osc.connect(gain);
+                gain.connect(ringAudioCtx.destination);
+                osc.start(t0);
+                osc.stop(t0 + duration + 0.05);
             };
-            beep();
-            ringInterval = setInterval(beep, 1500);
-            if (navigator.vibrate) navigator.vibrate([300, 200, 300, 200, 300]);
+
+            const ringPattern = () => {
+                // "dring-dring" : deux notes rapprochées, deux fois, avec une pause
+                playNote(1000, 0.00, 0.35, 0.5);
+                playNote(1000, 0.40, 0.35, 0.5);
+                playNote(1000, 1.00, 0.35, 0.5);
+                playNote(1000, 1.40, 0.35, 0.5);
+            };
+
+            ringPattern();
+            ringInterval = setInterval(ringPattern, 2600);
+            if (navigator.vibrate) navigator.vibrate([400, 200, 400, 200, 400, 800]);
         } catch (e) { /* pas grave */ }
     }
     function stopRingSound() {
@@ -337,6 +403,8 @@
         pendingOffer = null;
         currentCallId = null;
         callState = 'idle';
+        minimized = false;
+        els.bar.classList.remove('show');
         hideOverlay();
     }
 
@@ -349,6 +417,8 @@
         buildUI();
         ensureChannel();
     }
+
+    window.chatCall = { start: startOutgoingCall };
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
     else init();

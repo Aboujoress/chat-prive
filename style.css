@@ -462,7 +462,15 @@ button { font: inherit; }
     border-radius: 16px;
     cursor: zoom-in;
 }
-.message-img.loading {
+.message-video {
+    display: block;
+    max-width: 100%;
+    max-height: 340px;
+    border-radius: 16px;
+    background: #000;
+}
+.message-img.loading,
+.message-video.loading {
     min-width: 210px;
     min-height: 150px;
     background: linear-gradient(100deg, rgba(255, 255, 255, 0.06) 30%, rgba(255, 255, 255, 0.16) 50%, rgba(255, 255, 255, 0.06) 70%);
@@ -1263,6 +1271,42 @@ button:focus-visible,
     cursor: pointer;
 }
 
+/* ---------- Bandeau des messages épinglés ---------- */
+.pinned-bar {
+    display: none;
+    flex-direction: column;
+    position: relative;
+    z-index: 2;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+}
+.pinned-bar.show { display: flex; }
+.pinned-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 14px;
+    border: 0;
+    border-top: 1px solid var(--border);
+    text-align: left;
+    color: var(--text);
+    background: transparent;
+    cursor: pointer;
+}
+.pinned-row:first-child { border-top: 0; }
+.pinned-row:hover { background: var(--surface-2); }
+.pinned-icon { flex: none; font-size: 0.9rem; }
+.pinned-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    font-size: 0.84rem;
+    color: var(--muted);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
 /* ---------- Barre « Réponse à … » ---------- */
 .reply-bar {
     display: none;
@@ -1566,4 +1610,12 @@ button:focus-visible,
     background: none;
     cursor: pointer;
 }
-.call-log { font-style: italic; opacity: 0.9; }
+.call-log { font-style: italic; opacity: 0.9; cursor: pointer; text-decoration: underline dotted; }
+
+.call-minimize { position:absolute; top:18px; right:18px; width:36px; height:36px; display:grid; place-items:center; border:0; border-radius:50%; color:#fff; background:rgba(255,255,255,.14); cursor:pointer; }
+.call-minimize svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.call-bar { position:fixed; top:calc(env(safe-area-inset-top,0px) + 8px); left:50%; z-index:3900; display:flex; align-items:center; gap:8px; padding:8px 16px; border-radius:999px; font-size:.85rem; font-weight:600; color:#fff; background:linear-gradient(135deg,var(--a1),var(--a2)); box-shadow:0 14px 30px -10px var(--a-glow); cursor:pointer; transform:translateX(-50%) translateY(-140%); transition:transform .25s cubic-bezier(.34,1.56,.64,1); }
+.call-bar.show { transform:translateX(-50%) translateY(0); }
+.call-bar-dot { width:8px; height:8px; border-radius:50%; background:#fff; animation:blink 1.4s ease-in-out infinite; }
+.call-round.speaker { background:rgba(255,255,255,.14); color:#fff; }
+.call-round.speaker.on { background:#fff; color:#111; }

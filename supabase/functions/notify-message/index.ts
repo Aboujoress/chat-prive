@@ -30,6 +30,7 @@ export interface Deps {
 // Texte affiché dans la notification
 export function previewOf(msg: { type?: string; content?: string }): string {
   if (msg.type === 'image') return '📷 Photo';
+  if (msg.type === 'video') return '🎥 Vidéo';
   if (msg.type === 'audio') return '🎤 Message vocal';
     if (msg.type === 'call') {
     try {
