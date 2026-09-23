@@ -1403,14 +1403,16 @@ function renderMessage(msg, replaceEl) {
     } else if (msg.type === 'call') {
         const p = document.createElement('p');
         p.className = 'call-log';
-        let label = 'Appel';
+         let label = 'Appel';
+        let icon = '📞';
         try {
             const info = JSON.parse(msg.content || '{}');
+            if (info.video) icon = '📹';
             if (info.status === 'missed') label = isMine ? 'Sans réponse' : 'Appel manqué';
             else if (info.status === 'declined') label = 'Appel refusé';
-            else label = 'Appel · ' + formatDuration(info.duration || 0);
+            else label = (info.video ? 'Appel vidéo · ' : 'Appel · ') + formatDuration(info.duration || 0);
         } catch (e) { /* ignoré */ }
-        p.textContent = '📞 ' + label;
+        p.textContent = icon + ' ' + label;
         div.appendChild(p);
     } else {
         const p = document.createElement('p');
