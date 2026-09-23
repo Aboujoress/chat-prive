@@ -1566,3 +1566,4 @@ button:focus-visible,
     background: none;
     cursor: pointer;
 }
+.call-log { font-style: italic; opacity: 0.9; }

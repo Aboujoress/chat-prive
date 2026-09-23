@@ -1280,6 +1280,18 @@ function renderMessage(msg, replaceEl) {
         div.appendChild(img);
     } else if (msg.type === 'audio') {
         div.appendChild(buildVoicePlayer(msg.content));
+    } else if (msg.type === 'call') {
+        const p = document.createElement('p');
+        p.className = 'call-log';
+        let label = 'Appel';
+        try {
+            const info = JSON.parse(msg.content || '{}');
+            if (info.status === 'missed') label = isMine ? 'Sans réponse' : 'Appel manqué';
+            else if (info.status === 'declined') label = 'Appel refusé';
+            else label = 'Appel · ' + formatDuration(info.duration || 0);
+        } catch (e) { /* ignoré */ }
+        p.textContent = '📞 ' + label;
+        div.appendChild(p);
     } else {
         const p = document.createElement('p');
         p.textContent = msg.content;

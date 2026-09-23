@@ -18,6 +18,7 @@
     let channel = null, pc = null, localStream = null, remoteAudio = null;
     let currentCallId = null, pendingOffer = null, pendingCandidates = [];
     let callState = 'idle';   // idle | calling | ringing | connected
+    let isCaller = false;
     let ringTimer = null, durationTimer = null, callStartedAt = 0;
     let els = {};
 
@@ -231,6 +232,7 @@
         catch (e) { showToastSafe('Micro refusé ou indisponible'); return; }
 
         currentCallId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now());
+        isCaller = true;
         callState = 'calling';
         pc = createPeerConnection();
         localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
@@ -258,6 +260,7 @@
         }
         currentCallId = payload.callId;
         pendingOffer = payload.sdp;
+        isCaller = false;
         callState = 'ringing';
         showOverlay('ringing');
         playRingSound();
@@ -309,8 +312,19 @@
         showToastSafe('Occupé(e)');
         endCall('busy', true);
     }
+    function logCallResult(reason) {
+        if (!isCaller || !currentCallId || reason === 'glare') return;
+        const duration = callStartedAt ? Math.floor((Date.now() - callStartedAt) / 1000) : 0;
+        const status = duration > 0 ? 'ended' : (reason === 'declined' ? 'declined' : 'missed');
+        const content = JSON.stringify({ status: status, duration: duration });
+        supabaseClient.from('messages')
+            .insert([{ content: content, type: 'call', sender_id: myUserId(), client_id: newClientId() }])
+            .select()
+            .then(({ data, error }) => { if (!error && data && data[0]) notifyPartner(data[0]); });
+    }
 
     function endCall(reason, silent) {
+        logCallResult(reason);
         clearTimeout(ringTimer);
         stopRingSound();
         clearInterval(durationTimer);

@@ -31,6 +31,15 @@ export interface Deps {
 export function previewOf(msg: { type?: string; content?: string }): string {
   if (msg.type === 'image') return '📷 Photo';
   if (msg.type === 'audio') return '🎤 Message vocal';
+    if (msg.type === 'call') {
+    try {
+      const info = JSON.parse(msg.content ?? '{}');
+      if (info.status === 'missed') return '📵 Appel manqué';
+      if (info.status === 'declined') return '📵 Appel refusé';
+      const m = Math.floor((info.duration || 0) / 60), s = String((info.duration || 0) % 60).padStart(2, '0');
+      return `📞 Appel terminé (${m}:${s})`;
+    } catch { return '📞 Appel'; }
+  }
   const text = String(msg.content ?? '').replace(/\s+/g, ' ').trim();
   return text.length > 120 ? text.slice(0, 117) + '…' : text || 'Nouveau message';
 }
