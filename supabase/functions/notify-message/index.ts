@@ -35,8 +35,17 @@ export function previewOf(msg: { type?: string; content?: string }): string {
   return text.length > 120 ? text.slice(0, 117) + '…' : text || 'Nouveau message';
 }
 
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-webhook-secret',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+};
+
 const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...corsHeaders },
+  });
 
 export function buildHandler(deps: Deps) {
   return async (req: Request): Promise<Response> => {
@@ -141,6 +150,9 @@ if (Deno.env.get('NOTIFY_TEST') !== '1') {
   // soit un appel direct depuis l'application, authentifié par la session
   // de la personne connectée (pas besoin d'exposer le secret au navigateur).
   Deno.serve(async (req: Request) => {
+    if (req.method === 'OPTIONS') {
+      return new Response('ok', { headers: corsHeaders });
+    }
     if (req.headers.get('x-webhook-secret')) {
       return handler(req);   // vrai webhook Supabase : chemin inchangé
     }
