@@ -1314,13 +1314,11 @@ chatMessages.addEventListener('contextmenu', (e) => {
     if (gesture) { clearTimeout(gesture.timer); gesture = null; }
     openMessageMenu(el);
 });
+// Toucher un appel, une citation ou une réaction
 chatMessages.addEventListener('click', (e) => {
     const callLog = e.target.closest && e.target.closest('.call-log');
     if (callLog && window.chatCall) { window.chatCall.start(); return; }
-    const quote = e.target.closest && e.target.closest('.reply-quote');
 
-// Toucher une citation ou une réaction
-chatMessages.addEventListener('click', (e) => {
     const quote = e.target.closest && e.target.closest('.reply-quote');
     if (quote && quote.dataset.replyTo) {
         jumpToMessage(Number(quote.dataset.replyTo));
@@ -1329,7 +1327,6 @@ chatMessages.addEventListener('click', (e) => {
     const chip = e.target.closest && e.target.closest('.reaction-chip');
     if (chip) toggleReaction(Number(chip.dataset.messageId), chip.dataset.emoji);
 });
-
 /* ---------- Affichage des messages ---------- */
 
 function resetChatView() {
