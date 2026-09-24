@@ -10,6 +10,11 @@ const supabaseClient = window.supabaseClient;
 const BASE_TITLE = document.title;
 const MAX_RECORD_SECONDS = 300;      // un vocal s'arrête et s'envoie seul après 5 min
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+const LOCATION_DURATIONS = [
+    { label: '15 minutes', minutes: 15 },
+    { label: '1 heure', minutes: 60 },
+    { label: '8 heures', minutes: 480 }
+];
 const HISTORY_LIMIT = 300;           // messages chargés depuis Supabase
 const CACHE_LIMIT = 200;             // messages gardés pour le mode hors ligne
 const SIGNED_URL_SECONDS = 3600;     // durée de vie d'une adresse de fichier
@@ -37,6 +42,10 @@ const activityBar = document.getElementById('activityBar');
 const recordingTimer = document.getElementById('recordingTimer');
 const cancelRecBtn = document.getElementById('cancelRecBtn');
 const imageBtn = document.getElementById('imageBtn');
+const locationBtn = document.getElementById('locationBtn');
+const locationBanner = document.getElementById('locationBanner');
+const locationBannerText = document.getElementById('locationBannerText');
+const locationBannerBtn = document.getElementById('locationBannerBtn');
 const imageInput = document.getElementById('imageInput');
 const recordBtn = document.getElementById('recordBtn');
 const statusText = document.getElementById('statusText');
@@ -1399,6 +1408,18 @@ function renderMessage(msg, replaceEl) {
         applyMediaSrc(video, msg.content);
         div.appendChild(video);
     } else if (msg.type === 'audio') {
+            } else if (msg.type === 'location') {
+        let info = {};
+        try { info = JSON.parse(msg.content || '{}'); } catch (e) { /* ignoré */ }
+        const p = document.createElement('p');
+        p.className = 'call-log';
+        p.textContent = info.live ? `🔴 Position en direct partagée (${info.minutes} min)` : '📍 Position partagée — toucher pour ouvrir';
+        p.addEventListener('click', () => {
+            if (info.lat) window.open(mapsUrl(info.lat, info.lng), '_blank');
+            else showToast('Cette position en direct a peut-être expiré.');
+        });
+        div.appendChild(p);
+    } else if (msg.type === 'call') {
         div.appendChild(buildVoicePlayer(msg.content));
     } else if (msg.type === 'call') {
         const p = document.createElement('p');
@@ -2163,6 +2184,161 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
+/* ---------- Partage de position ---------- */
+
+let myLocationWatchId = null;
+let myLocationExpiresAt = 0;
+let myLocationTimer = null;
+let partnerLiveLocation = null;   // { lat, lng, expires_at } ou null
+
+function mapsUrl(lat, lng) {
+    return `https://www.google.com/maps?q=${lat},${lng}`;
+}
+
+function openLocationChoice() {
+    if (!myId) return;
+    const existing = document.getElementById('locationChoice');
+    if (existing) existing.remove();
+
+    const box = document.createElement('div');
+    box.id = 'locationChoice';
+    box.className = 'call-choice open';
+    let html = '<div class="call-choice-box"><p class="call-choice-title">Partager ma position</p>';
+    html += '<button type="button" data-act="once">📍 Ma position actuelle (une fois)</button>';
+    if (myLocationExpiresAt > Date.now()) {
+        html += '<button type="button" class="video" data-act="stop">⏹ Arrêter le partage en direct</button>';
+    } else {
+        LOCATION_DURATIONS.forEach(d => {
+            html += `<button type="button" class="video" data-act="live-${d.minutes}">🔴 En direct pendant ${d.label}</button>`;
+        });
+    }
+    html += '<button type="button" class="cancel" data-act="cancel">Annuler</button></div>';
+    box.innerHTML = html;
+    document.body.appendChild(box);
+
+    box.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-act]');
+        if (!btn) { if (e.target === box) box.remove(); return; }
+        const act = btn.dataset.act;
+        box.remove();
+        if (act === 'once') shareLocationOnce();
+        else if (act === 'stop') stopLiveLocation(false);
+        else if (act.startsWith('live-')) startLiveLocation(parseInt(act.split('-')[1], 10));
+    });
+}
+
+function getPosition() {
+    return new Promise((resolve, reject) => {
+        if (!navigator.geolocation) { reject(new Error('Géolocalisation non disponible')); return; }
+        navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000 });
+    });
+}
+
+async function shareLocationOnce() {
+    try {
+        const pos = await getPosition();
+        const content = JSON.stringify({ lat: pos.coords.latitude, lng: pos.coords.longitude, live: false });
+        await sendTextLikeMessage('location', content);
+    } catch (e) {
+        showToast('Position indisponible : vérifie que la géolocalisation est autorisée.');
+    }
+}
+
+// Réutilise le même chemin d'envoi que le texte, pour bénéficier de la bulle "en cours d'envoi"
+async function sendTextLikeMessage(type, content) {
+    if (!navigator.onLine) { showToast('Pas de connexion.'); return; }
+    const clientId = newClientId();
+    addSending(clientId, 'text', { text: type === 'location' ? '📍 Position…' : content });
+    const result = await insertMessage(content, type, clientId);
+    if (result.status !== 'ok') { failSending(clientId); showToast('Envoi impossible.'); }
+}
+
+async function startLiveLocation(minutes) {
+    try {
+        const pos = await getPosition();
+        myLocationExpiresAt = Date.now() + minutes * 60000;
+
+        const { error } = await supabaseClient.from('live_locations').upsert([{
+            user_id: myId, lat: pos.coords.latitude, lng: pos.coords.longitude,
+            accuracy: pos.coords.accuracy, updated_at: new Date().toISOString(),
+            expires_at: new Date(myLocationExpiresAt).toISOString()
+        }], { onConflict: 'user_id' });
+        if (error) { showToast('Partage impossible : ' + error.message); return; }
+
+        await sendTextLikeMessage('location', JSON.stringify({ live: true, minutes: minutes }));
+
+        myLocationWatchId = navigator.geolocation.watchPosition((p) => {
+            supabaseClient.from('live_locations').update({
+                lat: p.coords.latitude, lng: p.coords.longitude,
+                accuracy: p.coords.accuracy, updated_at: new Date().toISOString()
+            }).eq('user_id', myId).then(() => { /* ignoré */ });
+        }, () => { /* ignoré */ }, { enableHighAccuracy: true, maximumAge: 15000 });
+
+        clearTimeout(myLocationTimer);
+        myLocationTimer = setTimeout(() => stopLiveLocation(true), minutes * 60000);
+        updateMyLocationBanner();
+    } catch (e) {
+        showToast('Position indisponible : vérifie que la géolocalisation est autorisée.');
+    }
+}
+
+function stopLiveLocation(expired) {
+    if (myLocationWatchId !== null) { navigator.geolocation.clearWatch(myLocationWatchId); myLocationWatchId = null; }
+    clearTimeout(myLocationTimer);
+    myLocationExpiresAt = 0;
+    if (myId) supabaseClient.from('live_locations').delete().eq('user_id', myId).then(() => { /* ignoré */ });
+    updateMyLocationBanner();
+    if (!expired) showToast('Partage de position arrêté.');
+}
+
+function updateMyLocationBanner() {
+    if (myLocationExpiresAt > Date.now()) {
+        locationBanner.style.display = 'flex';
+        locationBannerText.textContent = 'Tu partages ta position';
+        locationBannerBtn.textContent = 'Arrêter';
+        locationBannerBtn.onclick = () => stopLiveLocation(false);
+    } else if (!partnerLiveLocation) {
+        locationBanner.style.display = 'none';
+    }
+}
+
+function updatePartnerLocationBanner() {
+    if (partnerLiveLocation && new Date(partnerLiveLocation.expires_at).getTime() > Date.now()) {
+        locationBanner.style.display = 'flex';
+        locationBannerText.textContent = `🔴 ${partnerDisplayName(getPartnerId())} partage sa position`;
+        locationBannerBtn.textContent = 'Voir';
+        locationBannerBtn.onclick = () => window.open(mapsUrl(partnerLiveLocation.lat, partnerLiveLocation.lng), '_blank');
+    } else if (myLocationExpiresAt <= Date.now()) {
+        locationBanner.style.display = 'none';
+    }
+}
+
+async function loadPartnerLiveLocation() {
+    const pid = getPartnerId();
+    if (!pid) return;
+    try {
+        const { data } = await supabaseClient.from('live_locations').select('*').eq('user_id', pid).maybeSingle();
+        partnerLiveLocation = (data && new Date(data.expires_at).getTime() > Date.now()) ? data : null;
+        updatePartnerLocationBanner();
+    } catch (e) { /* ignoré */ }
+}
+
+function initLocationChannel() {
+    supabaseClient
+        .channel('chat-prive-location')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'live_locations' }, payload => {
+            const pid = getPartnerId();
+            if (payload.eventType === 'DELETE') {
+                if (payload.old.user_id === pid) { partnerLiveLocation = null; updatePartnerLocationBanner(); }
+                return;
+            }
+            if (payload.new.user_id === pid) { partnerLiveLocation = payload.new; updatePartnerLocationBanner(); }
+        })
+        .subscribe();
+}
+
+if (locationBtn) locationBtn.addEventListener('click', openLocationChoice);
+
 /* ---------- Envoi de texte ---------- */
 
 if (sendBtn) {
@@ -2658,6 +2834,8 @@ function startChat() {
     initChat();
     initProfilesChannel();
     initExtrasChannel();
+        initLocationChannel();
+    loadPartnerLiveLocation();
     initPinnedChannel();
     refreshConnectionUI();
 

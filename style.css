@@ -1619,3 +1619,30 @@ button:focus-visible,
 .call-bar-dot { width:8px; height:8px; border-radius:50%; background:#fff; animation:blink 1.4s ease-in-out infinite; }
 .call-round.speaker { background:rgba(255,255,255,.14); color:#fff; }
 .call-round.speaker.on { background:#fff; color:#111; }
+.location-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text);
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+}
+.location-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #ef4444;
+    animation: blink 1.4s ease-in-out infinite;
+}
+.location-banner span:nth-child(2) { flex: 1; }
+.location-banner button {
+    padding: 5px 12px;
+    border: 0;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: #fff;
+    background: linear-gradient(135deg, var(--a1), var(--a2));
+    cursor: pointer;
+}
