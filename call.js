@@ -388,9 +388,10 @@
                 playNote(1000, 1.40, 0.35, 0.5);
             };
 
+            const vibrateLoop = () => { if (navigator.vibrate) navigator.vibrate([400, 200, 400, 200, 400]); };
             ringPattern();
-            ringInterval = setInterval(ringPattern, 2600);
-            if (navigator.vibrate) navigator.vibrate([400, 200, 400, 200, 400, 800]);
+            vibrateLoop();
+            ringInterval = setInterval(() => { ringPattern(); vibrateLoop(); }, 2600);
         } catch (e) { /* pas grave */ }
     }
     function stopRingSound() {
@@ -477,6 +478,14 @@
         await pc.setLocalDescription(offer);
         send('call-offer', { callId: currentCallId, sdp: offer, video: isVideoCall });
 
+        try {
+            await supabaseClient.from('call_signals').insert([{
+                call_id: currentCallId, caller_id: myUserId(), callee_id: getPartnerId(),
+                offer: { sdp: offer, video: isVideoCall }
+            }]);
+            supabaseClient.functions.invoke('notify-call', { body: { callId: currentCallId } }).catch(() => { /* ignoré */ });
+        } catch (e) { /* pas grave : l'appel marche quand même si l'autre app est déjà ouverte */ }
+
         ringTimer = setTimeout(() => {
             if (callState === 'calling') { send('call-hangup', { callId: currentCallId, reason: 'timeout' }); endCall('timeout'); }
         }, RING_TIMEOUT_MS);
@@ -552,9 +561,14 @@
         endCall('busy', true);
     }
     function logCallResult(reason) {
+        const status = callStartedAt > 0 ? 'ended' : (reason === 'declined' ? 'declined' : 'missed');
+        if (currentCallId) {
+            supabaseClient.from('call_signals')
+                .update({ status: status, updated_at: new Date().toISOString() })
+                .eq('call_id', currentCallId).then(() => { /* ignoré */ });
+        }
         if (!isCaller || !currentCallId || reason === 'glare') return;
         const duration = callStartedAt ? Math.floor((Date.now() - callStartedAt) / 1000) : 0;
-        const status = duration > 0 ? 'ended' : (reason === 'declined' ? 'declined' : 'missed');
         const content = JSON.stringify({ status: status, duration: duration, video: isVideoCall });
         supabaseClient.from('messages')
             .insert([{ content: content, type: 'call', sender_id: myUserId(), client_id: newClientId() }])
@@ -595,10 +609,47 @@
         if (callState !== 'idle' && currentCallId) { try { send('call-hangup', { callId: currentCallId, reason: 'left' }); } catch (e) { /* ignoré */ } }
     });
 
+    async function loadIncomingCall(callId, autoAccept) {
+        if (!callId || callState !== 'idle') return;
+        try {
+            const { data, error } = await supabaseClient.from('call_signals').select('*').eq('call_id', callId).maybeSingle();
+            if (error || !data || data.status !== 'ringing' || data.callee_id !== myUserId()) return;
+
+            currentCallId = data.call_id;
+            pendingOffer = data.offer.sdp || data.offer;
+            isCaller = false;
+            isVideoCall = !!data.offer.video;
+            callState = 'ringing';
+            showOverlay('ringing');
+            playRingSound();
+            notifyIncomingLocally();
+            ringTimer = setTimeout(() => { if (callState === 'ringing') endCall('missed'); }, RING_TIMEOUT_MS);
+
+            if (autoAccept) setTimeout(() => { if (callState === 'ringing') acceptIncomingCall(); }, 300);
+        } catch (e) { /* ignoré */ }
+    }
+
+    function checkIncomingFromUrl() {
+        const params = new URLSearchParams(location.search);
+        const callId = params.get('call');
+        if (!callId) return;
+        history.replaceState({}, '', location.pathname);
+        loadIncomingCall(callId, params.get('action') === 'accept');
+    }
+
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.addEventListener('message', (e) => {
+            if (e.data && e.data.type === 'incoming-call') {
+                loadIncomingCall(e.data.callId, e.data.action === 'accept');
+            }
+        });
+    }
+
     function init() {
         injectStyles();
         buildUI();
         ensureChannel();
+        checkIncomingFromUrl();
     }
 
     window.chatCall = { start: openCallChoice };
